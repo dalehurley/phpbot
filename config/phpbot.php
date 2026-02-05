@@ -81,6 +81,16 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Abilities Storage Path
+    |--------------------------------------------------------------------------
+    | Path where learned abilities are persisted.
+    | The bot logs problem-solving patterns it discovers during execution
+    | and retrieves relevant ones before future tasks.
+    */
+    'abilities_storage_path' => dirname(__DIR__) . '/storage/abilities',
+
+    /*
+    |--------------------------------------------------------------------------
     | Working Directory
     |--------------------------------------------------------------------------
     | Default working directory for bash commands.

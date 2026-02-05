@@ -13,7 +13,8 @@ class BotResult
         private int $iterations,
         private array $toolCalls,
         private array $tokenUsage,
-        private array $analysis
+        private array $analysis,
+        private array $learnedAbilities = []
     ) {}
 
     public function isSuccess(): bool
@@ -51,6 +52,11 @@ class BotResult
         return $this->analysis;
     }
 
+    public function getLearnedAbilities(): array
+    {
+        return $this->learnedAbilities;
+    }
+
     public function toArray(): array
     {
         return [
@@ -61,6 +67,7 @@ class BotResult
             'tool_calls' => $this->toolCalls,
             'token_usage' => $this->tokenUsage,
             'analysis' => $this->analysis,
+            'learned_abilities' => $this->learnedAbilities,
         ];
     }
 
