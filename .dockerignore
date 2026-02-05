@@ -1,0 +1,9 @@
+node_modules
+vendor
+.git
+.gitignore
+*.md
+.env
+.env.*
+frontend/node_modules
+frontend/dist

@@ -1,0 +1,17 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use Dalehurley\Phpbot\Bot;
+use Dalehurley\Phpbot\CLI\Application;
+
+// Load configuration
+$configPath = __DIR__ . '/../config/phpbot.php';
+$config = file_exists($configPath) ? require $configPath : [];
+
+// Create and run the CLI application
+$app = new Application($config);
+$app->run($argv);

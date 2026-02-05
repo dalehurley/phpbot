@@ -1,0 +1,33 @@
+{
+    "name": "dalehurley/phpbot",
+    "description": "PHP Bot for automating your life - An evolving AI assistant powered by Claude",
+    "type": "project",
+    "require": {
+        "php": "^8.2",
+        "ext-readline": "*",
+        "claude-php/agent": "^1.3",
+        "claude-php/claude-php-sdk": "^0.5.3",
+        "phpoffice/phpword": "^1.0"
+    },
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Dalehurley\\Phpbot\\": "src/"
+        }
+    },
+    "bin": [
+        "bin/phpbot"
+    ],
+    "authors": [
+        {
+            "name": "Dale Hurley",
+            "email": "dale.hurley@createmy.com.au"
+        }
+    ],
+    "scripts": {
+        "phpbot": "php bin/phpbot"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
