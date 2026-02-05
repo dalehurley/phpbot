@@ -21,6 +21,9 @@ use Dalehurley\Phpbot\Tools\ToolPromoterTool;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
 use Dalehurley\Phpbot\Agent\AgentSelector;
 use Dalehurley\Phpbot\Storage\KeyStore;
+use Dalehurley\Phpbot\Storage\AbilityStore;
+use Dalehurley\Phpbot\Ability\AbilityLogger;
+use Dalehurley\Phpbot\Ability\AbilityRetriever;
 
 class Bot
 {
@@ -31,6 +34,9 @@ class Bot
     private bool $verbose;
     private ?SkillManager $skillManager = null;
     private ?KeyStore $keyStore = null;
+    private ?AbilityStore $abilityStore = null;
+    private ?AbilityLogger $abilityLogger = null;
+    private ?AbilityRetriever $abilityRetriever = null;
 
     public function __construct(array $config = [], bool $verbose = false)
     {
@@ -44,6 +50,7 @@ class Bot
         $this->initSkills();
         $this->registerSkillScriptTools();
         $this->initKeyStore();
+        $this->initAbilities();
     }
 
     private function getClient(): ClaudePhp
@@ -75,6 +82,7 @@ class Bot
             'tools_storage_path' => dirname(__DIR__) . '/storage/tools',
             'skills_path' => dirname(__DIR__) . '/skills',
             'keys_storage_path' => dirname(__DIR__) . '/storage/keys.json',
+            'abilities_storage_path' => dirname(__DIR__) . '/storage/abilities',
         ];
     }
 
@@ -126,10 +134,16 @@ class Bot
             $progress('skills', 'Skills: ' . implode(', ', array_map(fn($s) => $s->getName(), $resolvedSkills)));
         }
 
+        // Retrieve relevant abilities from past experience
+        $abilityGuidance = $this->retrieveAbilities($input, $analysis);
+        if ($abilityGuidance !== '') {
+            $progress('abilities', 'Found relevant learned abilities');
+        }
+
         // Select appropriate agent and tools
         $agentType = $this->agentSelector->selectAgent($analysis);
         $tools = $this->selectTools($analysis);
-        $systemPrompt = $this->composeSystemPrompt($analysis, $resolvedSkills);
+        $systemPrompt = $this->composeSystemPrompt($analysis, $resolvedSkills, $abilityGuidance);
 
         $this->log("🤖 Selected agent: {$agentType}");
         $this->log("🔧 Selected tools: " . implode(', ', array_map(fn($t) => $t->getName(), $tools)));
@@ -153,6 +167,9 @@ class Bot
 
         $this->autoCreateSkill($input, $analysis, $result, $resolvedSkills, $progress);
 
+        // Log any new abilities learned during execution
+        $learnedAbilities = $this->logAbilities($input, $analysis, $result, $progress);
+
         return new BotResult(
             success: $result->isSuccess(),
             answer: $result->getAnswer(),
@@ -160,7 +177,8 @@ class Bot
             iterations: $result->getIterations(),
             toolCalls: $result->getToolCalls(),
             tokenUsage: $result->getTokenUsage(),
-            analysis: $analysis
+            analysis: $analysis,
+            learnedAbilities: $learnedAbilities
         );
     }
 
@@ -348,6 +366,16 @@ PROMPT;
         $this->keyStore = new KeyStore($path);
     }
 
+    private function initAbilities(): void
+    {
+        $path = $this->config['abilities_storage_path'] ?? '';
+        if (!is_string($path) || $path === '') {
+            return;
+        }
+
+        $this->abilityStore = new AbilityStore($path);
+    }
+
     private function resolveSkills(string $input): array
     {
         if ($this->skillManager === null) {
@@ -361,9 +389,15 @@ PROMPT;
         }
     }
 
-    private function composeSystemPrompt(array $analysis, array $resolvedSkills): string
+    private function composeSystemPrompt(array $analysis, array $resolvedSkills, string $abilityGuidance = ''): string
     {
         $basePrompt = $this->getAgentSystemPrompt($analysis);
+
+        // Append ability guidance if available
+        if ($abilityGuidance !== '') {
+            $basePrompt .= "\n\n" . $abilityGuidance;
+        }
+
         if ($this->skillManager === null) {
             return $basePrompt;
         }
@@ -416,6 +450,59 @@ PROMPT;
 
         $this->initSkills();
         $progress('skills', "Created skill: {$slug}");
+    }
+
+    private function retrieveAbilities(string $input, array $analysis): string
+    {
+        if ($this->abilityStore === null || $this->abilityStore->count() === 0) {
+            return '';
+        }
+
+        try {
+            $retriever = new AbilityRetriever(
+                $this->getClient(),
+                $this->abilityStore,
+                $this->getFastModel()
+            );
+
+            return $retriever->retrieve($input, $analysis);
+        } catch (\Throwable $e) {
+            $this->log("⚠️ Ability retrieval failed: " . $e->getMessage());
+            return '';
+        }
+    }
+
+    private function logAbilities(string $input, array $analysis, $result, callable $progress): array
+    {
+        if ($this->abilityStore === null) {
+            return [];
+        }
+
+        // Only analyze when more than 1 iteration was needed (signs of problem-solving)
+        if ($result->getIterations() <= 1) {
+            return [];
+        }
+
+        try {
+            $logger = new AbilityLogger(
+                $this->getClient(),
+                $this->abilityStore,
+                $this->getFastModel()
+            );
+
+            $abilities = $logger->analyze($input, $analysis, $result);
+
+            if (!empty($abilities)) {
+                $titles = array_map(fn($a) => $a['title'], $abilities);
+                $this->log("🧠 Learned " . count($abilities) . " new abilities: " . implode(', ', $titles));
+                $progress('abilities_learned', 'Learned: ' . implode(', ', $titles));
+            }
+
+            return $abilities;
+        } catch (\Throwable $e) {
+            $this->log("⚠️ Ability logging failed: " . $e->getMessage());
+            return [];
+        }
     }
 
     private function slugifySkillName(string $input): string
@@ -779,6 +866,24 @@ PROMPT;
         } catch (\Throwable $e) {
             return [];
         }
+    }
+
+    public function listAbilities(): array
+    {
+        if ($this->abilityStore === null) {
+            return [];
+        }
+
+        return $this->abilityStore->all();
+    }
+
+    public function getAbilityCount(): int
+    {
+        if ($this->abilityStore === null) {
+            return 0;
+        }
+
+        return $this->abilityStore->count();
     }
 
     public function listSkillScripts(): array

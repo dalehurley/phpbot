@@ -208,6 +208,7 @@ HELP;
         $this->output("║    /tools    - List available tools                      ║\n");
         $this->output("║    /skills   - List available skills                     ║\n");
         $this->output("║    /scripts  - List skill script tools                   ║\n");
+        $this->output("║    /abilities - List learned abilities                   ║\n");
         $this->output("║    /clear    - Clear screen                              ║\n");
         $this->output("║    /exit     - Exit the application                      ║\n");
         $this->output("╚══════════════════════════════════════════════════════════╝\n");
@@ -253,6 +254,7 @@ HELP;
             '/tools' => $this->showTools(),
             '/skills' => $this->showSkills(),
             '/scripts' => $this->showScripts(),
+            '/abilities' => $this->showAbilities(),
             '/clear' => $this->clearScreen(),
             '/exit', '/quit', '/q' => -1,
             default => $this->unknownCommand($cmd),
@@ -271,6 +273,7 @@ HELP;
         $this->output("    /tools    - List available tools\n");
         $this->output("    /skills   - List available skills\n");
         $this->output("    /scripts  - List skill script tools\n");
+        $this->output("    /abilities - List learned abilities\n");
         $this->output("    /clear    - Clear screen\n");
         $this->output("    /exit     - Exit the application\n\n");
         $this->output("  Examples:\n");
@@ -335,6 +338,45 @@ HELP;
         return 0;
     }
 
+    private function showAbilities(): int
+    {
+        if ($this->bot === null) {
+            $this->bot = new Bot($this->config, false);
+        }
+
+        $abilities = $this->bot->listAbilities();
+
+        $this->output("\n🧠 Learned Abilities:\n");
+        $this->output(str_repeat('-', 50) . "\n");
+
+        if (empty($abilities)) {
+            $this->output("  (no abilities learned yet)\n");
+            $this->output("  Abilities are discovered when the bot\n");
+            $this->output("  overcomes obstacles during task execution.\n\n");
+            return 0;
+        }
+
+        foreach ($abilities as $ability) {
+            $this->output("  • {$ability['title']}\n");
+            if (!empty($ability['description'])) {
+                $this->output("    {$ability['description']}\n");
+            }
+            if (!empty($ability['obstacle'])) {
+                $this->output("    Obstacle: {$ability['obstacle']}\n");
+            }
+            if (!empty($ability['strategy'])) {
+                $this->output("    Strategy: {$ability['strategy']}\n");
+            }
+            if (!empty($ability['tags'])) {
+                $this->output("    Tags: " . implode(', ', $ability['tags']) . "\n");
+            }
+            $this->output("\n");
+        }
+
+        $this->output("  Total: " . count($abilities) . " abilities\n\n");
+        return 0;
+    }
+
     private function showTools(): int
     {
         $this->listTools(false);
@@ -385,6 +427,8 @@ HELP;
                     'agent_complete' => '✅',
                     'complete' => '🏁',
                     'summary_after' => '📌',
+                    'abilities' => '🧠',
+                    'abilities_learned' => '🧠',
                     default => '→',
                 };
 
@@ -413,6 +457,12 @@ HELP;
                 $toolCalls = $result->getToolCalls();
                 if (!empty($toolCalls)) {
                     $this->output("🔧 Tools used: " . implode(', ', array_unique(array_column($toolCalls, 'tool'))) . "\n");
+                }
+
+                // Show learned abilities if any
+                $learnedAbilities = $result->getLearnedAbilities();
+                if (!empty($learnedAbilities)) {
+                    $this->output("🧠 Abilities learned: " . implode(', ', array_map(fn($a) => $a['title'], $learnedAbilities)) . "\n");
                 }
 
                 $this->output("\n");
