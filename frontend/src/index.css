@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500,600,700&family=Golos+Text:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
@@ -45,72 +46,53 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 1rem;
+  --font-body: "Golos Text", "Segoe UI", sans-serif;
+  --font-display: "Fraunces", "Times New Roman", serif;
+  --background: oklch(0.965 0.025 95);
+  --foreground: oklch(0.18 0.03 250);
+  --card: oklch(0.98 0.02 85);
+  --card-foreground: oklch(0.2 0.03 250);
+  --popover: oklch(0.97 0.02 85);
+  --popover-foreground: oklch(0.2 0.03 250);
+  --primary: oklch(0.28 0.12 195);
+  --primary-foreground: oklch(0.97 0.02 80);
+  --secondary: oklch(0.9 0.05 85);
+  --secondary-foreground: oklch(0.2 0.03 250);
+  --muted: oklch(0.9 0.03 92);
+  --muted-foreground: oklch(0.45 0.04 245);
+  --accent: oklch(0.88 0.08 75);
+  --accent-foreground: oklch(0.2 0.03 250);
+  --destructive: oklch(0.6 0.2 32);
+  --border: oklch(0.78 0.02 80 / 0.4);
+  --input: oklch(0.97 0.02 85);
+  --ring: oklch(0.3 0.08 195);
+  --chart-1: oklch(0.65 0.16 150);
+  --chart-2: oklch(0.67 0.13 210);
+  --chart-3: oklch(0.5 0.09 30);
+  --chart-4: oklch(0.85 0.12 90);
+  --chart-5: oklch(0.66 0.16 60);
+  --sidebar: oklch(0.97 0.02 85);
+  --sidebar-foreground: oklch(0.2 0.03 250);
+  --sidebar-primary: oklch(0.28 0.12 195);
+  --sidebar-primary-foreground: oklch(0.98 0.02 80);
+  --sidebar-accent: oklch(0.88 0.08 75);
+  --sidebar-accent-foreground: oklch(0.2 0.03 250);
+  --sidebar-border: oklch(0.8 0.02 80 / 0.5);
+  --sidebar-ring: oklch(0.3 0.08 195);
+  --app-bg: radial-gradient(
+      circle at top left,
+      oklch(0.98 0.04 90),
+      transparent 55%
+    ),
+    radial-gradient(circle at 15% 55%, oklch(0.9 0.05 190), transparent 40%),
+    radial-gradient(circle at 80% 10%, oklch(0.95 0.08 75), transparent 45%),
+    linear-gradient(135deg, oklch(0.97 0.02 85), oklch(0.93 0.03 92));
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: oklch(0.18 0.03 250);
+  --foreground: oklch(0.98 0.02 90);
 }
 
 @layer base {
@@ -118,6 +100,146 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    font-family: var(--font-body);
+    background: var(--app-bg);
+    min-height: 100svh;
+    position: relative;
+    isolation: isolate;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(
+        circle at 10% 20%,
+        rgba(38, 79, 92, 0.25),
+        transparent 55%
+      ),
+      radial-gradient(
+        circle at 70% 10%,
+        rgba(206, 146, 58, 0.2),
+        transparent 50%
+      );
+    z-index: -2;
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: repeating-linear-gradient(
+        110deg,
+        rgba(0, 0, 0, 0.08) 0px,
+        rgba(0, 0, 0, 0.08) 1px,
+        transparent 1px,
+        transparent 4px
+      ),
+      repeating-linear-gradient(
+        10deg,
+        rgba(255, 255, 255, 0.05) 0px,
+        rgba(255, 255, 255, 0.05) 1px,
+        transparent 1px,
+        transparent 6px
+      );
+    opacity: 0.08;
+    z-index: -1;
+    pointer-events: none;
+  }
+}
+
+@layer utilities {
+  .display-title {
+    font-family: var(--font-display);
+    font-size: clamp(2.6rem, 3vw + 1.5rem, 4.1rem);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+  }
+  .eyebrow {
+    font-size: 0.75rem;
+    letter-spacing: 0.4em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+  .panel {
+    @apply rounded-3xl border border-white/40 bg-white/70 p-6 shadow-[0_18px_50px_-35px_rgba(20,30,60,0.6)] backdrop-blur;
+  }
+  .panel-accent {
+    background: linear-gradient(
+        160deg,
+        rgba(18, 66, 76, 0.12),
+        rgba(255, 255, 255, 0.8)
+      ),
+      white;
+    border-color: rgba(18, 66, 76, 0.2);
+  }
+  .panel-dark {
+    background: linear-gradient(135deg, #18222d, #0f1a22);
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+  .input-surface {
+    @apply rounded-2xl border border-white/50 bg-white/80 px-4 py-3 text-base text-foreground shadow-inner focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30;
+  }
+  .btn-primary {
+    @apply h-11 rounded-2xl px-6 text-sm font-semibold uppercase tracking-[0.2em];
+    background: linear-gradient(120deg, #1f6b7a, #0f3d46);
+    color: #f7f1e6;
+    box-shadow: 0 16px 35px -24px rgba(10, 30, 35, 0.8);
+  }
+  .btn-ghost {
+    @apply h-11 rounded-2xl border border-white/60 px-5 text-xs uppercase tracking-[0.25em] text-muted-foreground transition hover:border-primary/50 hover:text-foreground;
+  }
+  .checkbox {
+    @apply h-4 w-4 rounded border-white/60 text-primary shadow-sm focus:ring-primary/40;
+  }
+  .chip {
+    @apply rounded-full border border-white/60 bg-white/70 px-3 py-1 text-xs font-medium text-muted-foreground;
+  }
+  .chip-action {
+    @apply cursor-pointer transition hover:border-primary/40 hover:text-foreground;
+  }
+  .chip-live {
+    @apply border-emerald-200/80 bg-emerald-100/70 text-emerald-900;
+  }
+  .chip-error {
+    @apply border-red-200/80 bg-red-100/70 text-red-900;
+  }
+  .chip-light {
+    @apply border-white/20 bg-white/10 text-white/70;
+  }
+  .status-pill {
+    @apply rounded-full border px-3 py-1 text-xs uppercase tracking-[0.3em];
+  }
+  .status-live {
+    @apply border-emerald-300/60 bg-emerald-100 text-emerald-900;
+  }
+  .status-idle {
+    @apply border-amber-200/60 bg-amber-100 text-amber-900;
+  }
+  .run-card {
+    @apply w-full rounded-2xl border border-white/40 bg-white/60 p-4 text-left transition hover:border-primary/30 hover:bg-white/80;
+  }
+  .run-card-active {
+    @apply border-primary/40 bg-white;
+  }
+  .terminal {
+    @apply rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/80;
+  }
+  .terminal-error {
+    @apply border-red-500/30 bg-red-500/10;
+  }
+  .terminal-title {
+    @apply text-xs uppercase tracking-[0.25em] text-white/40;
+  }
+  .terminal-body {
+    @apply mt-3 max-h-72 overflow-auto whitespace-pre-wrap font-mono text-sm text-white/80;
+  }
+  .empty-state {
+    @apply rounded-2xl border border-dashed border-white/40 bg-white/30 p-6 text-center;
+  }
+  .field {
+    @apply flex flex-col gap-2 text-sm text-muted-foreground;
+  }
+  .field-label {
+    @apply text-xs uppercase tracking-[0.25em];
   }
 }

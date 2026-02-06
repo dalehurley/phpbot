@@ -9,6 +9,30 @@ declare(strict_types=1);
  * Environment variables will override these settings.
  */
 
+// Env helpers (string, int, float, list)
+$env = static function (string $key, mixed $default = null): mixed {
+    $value = getenv($key);
+    if ($value === false || $value === '') {
+        return $default;
+    }
+    return $value;
+};
+
+$envList = static function (string $key, array $default = []): array {
+    $value = getenv($key);
+    if ($value === false || trim($value) === '') {
+        return $default;
+    }
+
+    // Allow JSON arrays for complex entries.
+    $decoded = json_decode($value, true);
+    if (is_array($decoded)) {
+        return $decoded;
+    }
+
+    return array_values(array_filter(array_map('trim', explode(',', $value)), static fn ($item) => $item !== ''));
+};
+
 return [
     /*
     |--------------------------------------------------------------------------
@@ -17,7 +41,7 @@ return [
     | Your API key for the Anthropic Claude API.
     | Can also be set via ANTHROPIC_API_KEY environment variable.
     */
-    'api_key' => getenv('ANTHROPIC_API_KEY') ?: '',
+    'api_key' => $env('ANTHROPIC_API_KEY', ''),
 
     /*
     |--------------------------------------------------------------------------
@@ -26,9 +50,9 @@ return [
     | The Claude model to use for the agent.
     | Options: claude-haiku-4-5 claude-sonnet-4-5, claude-opus-4-5
     */
-    'fast_model' => 'claude-haiku-4-5',
-    'model' => 'claude-sonnet-4-5',
-    'super_model' => 'claude-opus-4-5',
+    'fast_model' => $env('PHPBOT_FAST_MODEL', 'claude-haiku-4-5'),
+    'model' => $env('PHPBOT_MODEL', 'claude-sonnet-4-5'),
+    'super_model' => $env('PHPBOT_SUPER_MODEL', 'claude-opus-4-5'),
 
     /*
     |--------------------------------------------------------------------------
@@ -36,7 +60,7 @@ return [
     |--------------------------------------------------------------------------
     | Maximum number of iterations the agent can perform before stopping.
     */
-    'max_iterations' => 20,
+    'max_iterations' => (int) $env('PHPBOT_MAX_ITERATIONS', 20),
 
     /*
     |--------------------------------------------------------------------------
@@ -44,7 +68,7 @@ return [
     |--------------------------------------------------------------------------
     | Maximum tokens for each response.
     */
-    'max_tokens' => 4096,
+    'max_tokens' => (int) $env('PHPBOT_MAX_TOKENS', 4096),
 
     /*
     |--------------------------------------------------------------------------
@@ -53,7 +77,15 @@ return [
     | Temperature for response generation (0.0 - 1.0).
     | Lower = more deterministic, Higher = more creative.
     */
-    'temperature' => 0.7,
+    'temperature' => (float) $env('PHPBOT_TEMPERATURE', 0.7),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Request Timeout
+    |--------------------------------------------------------------------------
+    | Timeout for API requests to Anthropic (seconds).
+    */
+    'timeout' => (float) $env('PHPBOT_TIMEOUT', 120.0),
 
     /*
     |--------------------------------------------------------------------------
@@ -61,7 +93,7 @@ return [
     |--------------------------------------------------------------------------
     | Path where custom tools are persisted.
     */
-    'tools_storage_path' => dirname(__DIR__) . '/storage/tools',
+    'tools_storage_path' => $env('PHPBOT_TOOLS_STORAGE_PATH', dirname(__DIR__) . '/storage/tools'),
 
     /*
     |--------------------------------------------------------------------------
@@ -69,7 +101,7 @@ return [
     |--------------------------------------------------------------------------
     | Directory where agent skills (SKILL.md) are stored.
     */
-    'skills_path' => dirname(__DIR__) . '/skills',
+    'skills_path' => $env('PHPBOT_SKILLS_PATH', dirname(__DIR__) . '/skills'),
 
     /*
     |--------------------------------------------------------------------------
@@ -77,7 +109,7 @@ return [
     |--------------------------------------------------------------------------
     | Path to JSON file for storing API keys.
     */
-    'keys_storage_path' => dirname(__DIR__) . '/storage/keys.json',
+    'keys_storage_path' => $env('PHPBOT_KEYS_STORAGE_PATH', dirname(__DIR__) . '/storage/keys.json'),
 
     /*
     |--------------------------------------------------------------------------
@@ -85,7 +117,7 @@ return [
     |--------------------------------------------------------------------------
     | Default working directory for bash commands.
     */
-    'working_directory' => getcwd(),
+    'working_directory' => $env('PHPBOT_WORKING_DIRECTORY', getcwd()),
 
     /*
     |--------------------------------------------------------------------------
@@ -93,7 +125,7 @@ return [
     |--------------------------------------------------------------------------
     | Bash commands that are blocked for safety.
     */
-    'blocked_commands' => [
+    'blocked_commands' => $envList('PHPBOT_BLOCKED_COMMANDS', [
         'rm -rf /',
         'rm -rf /*',
         'mkfs',
@@ -101,7 +133,7 @@ return [
         ':(){:|:&};:',
         '> /dev/sda',
         'chmod -R 777 /',
-    ],
+    ]),
 
     /*
     |--------------------------------------------------------------------------
@@ -110,5 +142,5 @@ return [
     | If not empty, only these command prefixes are allowed.
     | Leave empty to allow all commands except blocked ones.
     */
-    'allowed_commands' => [],
+    'allowed_commands' => $envList('PHPBOT_ALLOWED_COMMANDS', []),
 ];

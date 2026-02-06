@@ -57,7 +57,8 @@ class Bot
             if ($apiKey === '') {
                 throw new \RuntimeException('ANTHROPIC_API_KEY is required. Set it via environment variable or config.');
             }
-            $this->client = new ClaudePhp(apiKey: $apiKey);
+            $timeout = (float) ($this->config['timeout'] ?? 30.0);
+            $this->client = new ClaudePhp(apiKey: $apiKey, timeout: $timeout);
         }
         return $this->client;
     }
@@ -72,6 +73,7 @@ class Bot
             'max_iterations' => 20,
             'max_tokens' => 4096,
             'temperature' => 0.7,
+            'timeout' => 120.0,
             'tools_storage_path' => dirname(__DIR__) . '/storage/tools',
             'skills_path' => dirname(__DIR__) . '/skills',
             'keys_storage_path' => dirname(__DIR__) . '/storage/keys.json',
@@ -144,6 +146,17 @@ class Bot
         // Execute the agent
         $progress('executing', 'Executing task...');
         $result = $agent->run($enhancedPrompt);
+
+        if (! $result->isSuccess() && $this->isToolInputDictionaryError($result->getError())) {
+            $progress('recovery', 'Tool input format error detected. Retrying with strict tool input guidance...');
+            $this->log("⚠️ Tool input format error detected. Retrying once with stricter tool guidance.");
+
+            $recoverySystemPrompt = $this->withToolInputGuard($systemPrompt);
+            $recoveryPrompt = $this->buildRecoveryPrompt($input, $analysis);
+            $recoveryAgent = $this->createAgent($agentType, $tools, $recoverySystemPrompt, $analysis, $progress);
+
+            $result = $recoveryAgent->run($recoveryPrompt);
+        }
         $progress('complete', 'Task execution complete');
 
         $afterSummary = $this->summarizeAfter($input, $analysis, $result);
@@ -269,7 +282,12 @@ PROMPT;
             ->maxIterations($this->config['max_iterations'])
             ->maxTokens($this->config['max_tokens'])
             ->temperature($this->config['temperature'])
-            ->withTools($tools);
+            ->withTools($tools)
+            // Enable context management to prevent message structure corruption on long conversations
+            ->withContextManagement(150000, [
+                'clear_tool_results' => false,
+                'preserve_system_prompt' => true,
+            ]);
 
         // Always add progress callbacks for tool execution
         $agent->onToolExecution(function (string $tool, array $input, $result) use ($progress) {
@@ -749,6 +767,39 @@ PROMPT;
         }
 
         return $prompt;
+    }
+
+    private function buildRecoveryPrompt(string $input, array $analysis): string
+    {
+        $prompt = $this->buildEnhancedPrompt($input, $analysis);
+        $prompt .= "\n\n## Tool Input Requirements\n";
+        $prompt .= "- For every tool call, the `input` must be a JSON object (dictionary).\n";
+        $prompt .= "- Never pass a string, array, or null as `input`.\n";
+        $prompt .= "- If the tool expects a single string, wrap it with the correct parameter name.\n";
+        $prompt .= "- If no parameters are needed, use `{}`.\n";
+
+        return $prompt;
+    }
+
+    private function withToolInputGuard(string $systemPrompt): string
+    {
+        return $systemPrompt . "\n\n## Tool Input Guard\n"
+            . "- Every tool call must use an `input` JSON object (dictionary).\n"
+            . "- Never emit a string, array, or null for `input`.\n"
+            . "- Use `{}` when no arguments are required.\n";
+    }
+
+    private function isToolInputDictionaryError(?string $error): bool
+    {
+        if ($error === null || $error === '') {
+            return false;
+        }
+
+        $lower = strtolower($error);
+
+        return str_contains($lower, 'tool_use.input')
+            || str_contains($lower, 'input should be a valid dictionary')
+            || (str_contains($lower, 'tool_use') && str_contains($lower, 'dictionary'));
     }
 
     private function log(string $message): void

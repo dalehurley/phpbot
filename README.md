@@ -96,3 +96,39 @@ If you add new tools or agents, keep the public behavior documented here and ens
 ## License
 
 MIT
+
+
+## Frontend UI
+
+Run the PHP API server:
+
+```bash
+php -d max_execution_time=0 -S localhost:8787 -t public
+```
+
+Start the WebSocket server (for live progress updates):
+
+```bash
+composer install
+php bin/ws-server.php
+```
+
+Then start the Vite frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The UI will be available at `http://localhost:5173` and will proxy `/api/*` requests to the PHP server.
+
+You can override the WebSocket URL in the frontend by setting `VITE_WS_URL` in `frontend/.env`.
+
+You can also run everything in parallel with:
+
+```bash
+composer run web
+```
+
+The Advanced controls panel lets power users override model routing, token budgets, and iteration counts per run. The Skill Builder and Tool Builder panels generate structured prompts to create new skills or tools directly from the UI. The Output panel now includes server log tails, full log fetches, and live WebSocket progress updates for debugging failed runs.
