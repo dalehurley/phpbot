@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "971f4280ceb9d56038b83dceedd2c5ca",
+    "content-hash": "a7900d4b8f1083956629e929450c86cb",
     "packages": [
         {
             "name": "amphp/amp",
@@ -152,16 +152,16 @@
         },
         {
             "name": "claude-php/agent",
-            "version": "v1.4.3",
+            "version": "v1.4.6",
             "source": {
                 "type": "git",
                 "url": "https://github.com/claude-php/claude-php-agent.git",
-                "reference": "552a9a401b1b7b0ee33bbad4d690c23665730dc1"
+                "reference": "e90dd246de736db36092f66802d0e1f6c8871091"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/claude-php/claude-php-agent/zipball/552a9a401b1b7b0ee33bbad4d690c23665730dc1",
-                "reference": "552a9a401b1b7b0ee33bbad4d690c23665730dc1",
+                "url": "https://api.github.com/repos/claude-php/claude-php-agent/zipball/e90dd246de736db36092f66802d0e1f6c8871091",
+                "reference": "e90dd246de736db36092f66802d0e1f6c8871091",
                 "shasum": ""
             },
             "require": {
@@ -219,7 +219,7 @@
                 "issues": "https://github.com/claude-php/agent/issues",
                 "source": "https://github.com/claude-php/agent"
             },
-            "time": "2026-02-05T21:20:07+00:00"
+            "time": "2026-02-06T03:24:39+00:00"
         },
         {
             "name": "claude-php/claude-php-sdk",

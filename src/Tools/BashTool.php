@@ -14,11 +14,14 @@ class BashTool implements ToolInterface
     private array $allowedCommands;
     private array $blockedCommands;
     private string $workingDirectory;
+    private int $consecutiveEmptyCount = 0;
+    private int $maxOutputChars;
 
     public function __construct(array $config = [])
     {
         $this->config = $config;
         $this->workingDirectory = $config['working_directory'] ?? getcwd();
+        $this->maxOutputChars = (int) ($config['bash_max_output_chars'] ?? 15000);
 
         // Commands that are explicitly allowed (empty = all allowed except blocked)
         $this->allowedCommands = $config['allowed_commands'] ?? [];
@@ -81,10 +84,14 @@ class BashTool implements ToolInterface
         $timeout = $input['timeout'] ?? 60;
         $env = $input['env'] ?? [];
 
-        // Validate command is not empty
+        // Validate command is not empty — escalating messages guide the model
         if (empty(trim($command))) {
-            return ToolResult::error('Command cannot be empty');
+            $this->consecutiveEmptyCount++;
+            return ToolResult::error($this->getEmptyCommandMessage());
         }
+
+        // Reset counter on valid command
+        $this->consecutiveEmptyCount = 0;
 
         // Check for blocked commands
         foreach ($this->blockedCommands as $blocked) {
@@ -111,8 +118,8 @@ class BashTool implements ToolInterface
             $result = $this->executeCommand($command, $workingDir, $timeout, $env);
 
             return ToolResult::success(json_encode([
-                'stdout' => $result['stdout'],
-                'stderr' => $result['stderr'],
+                'stdout' => $this->truncateOutput($result['stdout']),
+                'stderr' => $this->truncateOutput($result['stderr'], 3000),
                 'exit_code' => $result['exit_code'],
                 'command' => $command,
                 'working_directory' => $workingDir,
@@ -200,6 +207,45 @@ class BashTool implements ToolInterface
             'stderr' => trim($stderr),
             'exit_code' => $status['exitcode'] ?? $exitCode,
         ];
+    }
+
+    /**
+     * Return an escalating error message for consecutive empty commands.
+     * Progressively stronger language nudges the model to change approach.
+     */
+    private function getEmptyCommandMessage(): string
+    {
+        if ($this->consecutiveEmptyCount >= 3) {
+            return "CRITICAL: {$this->consecutiveEmptyCount} consecutive empty commands detected. " .
+                "You are stuck in a loop. STOP and reassess your approach immediately. " .
+                "Options: (1) Provide a complete, specific bash command. " .
+                "(2) Use write_file tool instead of bash for creating files. " .
+                "(3) If the task is complete, provide your final summary without calling more tools.";
+        }
+        if ($this->consecutiveEmptyCount >= 2) {
+            return "WARNING: Second consecutive empty command. Provide a complete, valid bash command. " .
+                "If you are trying to create a large file, use the write_file tool or break it into smaller commands.";
+        }
+        return "Command cannot be empty. Please provide a valid bash command to execute.";
+    }
+
+    /**
+     * Truncate large outputs to prevent context window explosion.
+     * Keeps first and last portions so the model sees the beginning and end.
+     */
+    private function truncateOutput(string $output, int $maxChars = 0): string
+    {
+        $max = $maxChars > 0 ? $maxChars : $this->maxOutputChars;
+        if (strlen($output) <= $max) {
+            return $output;
+        }
+
+        $halfMax = (int) ($max / 2);
+        $totalLines = substr_count($output, "\n") + 1;
+
+        return substr($output, 0, $halfMax) .
+            "\n\n... [output truncated: ~{$totalLines} lines total, showing first and last portions] ...\n\n" .
+            substr($output, -$halfMax);
     }
 
     public function toDefinition(): array

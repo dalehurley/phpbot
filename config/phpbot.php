@@ -59,8 +59,9 @@ return [
     | Max Iterations
     |--------------------------------------------------------------------------
     | Maximum number of iterations the agent can perform before stopping.
+    | Higher values allow more complex tasks but consume more API tokens.
     */
-    'max_iterations' => (int) $env('PHPBOT_MAX_ITERATIONS', 20),
+    'max_iterations' => (int) $env('PHPBOT_MAX_ITERATIONS', 25),
 
     /*
     |--------------------------------------------------------------------------
@@ -85,7 +86,29 @@ return [
     |--------------------------------------------------------------------------
     | Timeout for API requests to Anthropic (seconds).
     */
-    'timeout' => (float) $env('PHPBOT_TIMEOUT', 120.0),
+    'timeout' => (float) $env('PHPBOT_TIMEOUT', 300.0),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Stale Loop Detection
+    |--------------------------------------------------------------------------
+    | Controls when the agent is stopped for being stuck in a loop.
+    | max_errors: consecutive tool errors before halting
+    | max_empty: consecutive empty tool calls before halting
+    | max_repeated: consecutive identical tool calls before halting
+    */
+    'stale_loop_max_errors' => (int) $env('PHPBOT_STALE_LOOP_MAX_ERRORS', 5),
+    'stale_loop_max_empty' => (int) $env('PHPBOT_STALE_LOOP_MAX_EMPTY', 3),
+    'stale_loop_max_repeated' => (int) $env('PHPBOT_STALE_LOOP_MAX_REPEATED', 4),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Bash Output Limits
+    |--------------------------------------------------------------------------
+    | Maximum characters for bash stdout/stderr to prevent context explosion.
+    | Large outputs are truncated to first+last portions to keep context manageable.
+    */
+    'bash_max_output_chars' => (int) $env('PHPBOT_BASH_MAX_OUTPUT', 15000),
 
     /*
     |--------------------------------------------------------------------------
