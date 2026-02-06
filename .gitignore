@@ -1,7 +1,31 @@
+# =========================
+# Environment & Secrets
+# =========================
 .env
+.env.*
+!.env.example
 keys.json
+
+# =========================
+# PHP / Composer
+# =========================
 vendor/
-node_modules/
+composer.phar
+*.phar
+
+# =========================
+# PHP Testing
+# =========================
+.phpunit.cache/
+.phpunit.result.cache
+phpunit.xml
+phpunit.xml.bak
+clover.xml
+coverage/
+
+# =========================
+# Laravel / Storage
+# =========================
 storage/*.key
 storage/*.log
 storage/logs/
@@ -9,6 +33,51 @@ storage/framework/
 storage/app/public/
 public/storage/
 bootstrap/cache/
+
+# =========================
+# Node.js / Frontend
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+pnpm-lock.yaml
+package-lock.json
+vite.config.ts.timestamp-*.mjs
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# =========================
+# IDE / Editors
+# =========================
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# =========================
+# Cache & Temp
+# =========================
 cache/
 tmp/
 *.log
@@ -18,26 +87,11 @@ tmp/
 *.swp
 *.swo
 *.pid
-coverage/
-clover.xml
-phpunit.xml
-phpunit.xml.bak
-.phpunit.result.cache
-/.phpunit.cache/
-.env.*
-!.env.example
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-vite.config.ts.timestamp-*.mjs
+
+# =========================
+# Database
+# =========================
 *.sqlite
+*.sqlite-journal
 *.db
 *.sql
-!.env.example
-!.gitignore
-!README.md

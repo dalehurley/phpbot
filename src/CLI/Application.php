@@ -13,10 +13,12 @@ class Application
     private ?Bot $bot = null;
     private ?KeyStore $keyStore = null;
     private bool $verbose = false;
+    private FileResolver $fileResolver;
 
     public function __construct(array $config = [])
     {
         $this->config = $config;
+        $this->fileResolver = new FileResolver();
     }
 
     public function run(array $argv): int
@@ -205,16 +207,26 @@ HELP;
         $this->output("╠══════════════════════════════════════════════════════════╣\n");
         $this->output("║  Commands:                                               ║\n");
         $this->output("║    /help     - Show help                                 ║\n");
+        $this->output("║    /file     - Search & select files to attach           ║\n");
+        $this->output("║    /pick     - Open file picker dialog (macOS)           ║\n");
+        $this->output("║    /files    - List attached files                       ║\n");
+        $this->output("║    /detach   - Remove an attached file                   ║\n");
         $this->output("║    /tools    - List available tools                      ║\n");
         $this->output("║    /skills   - List available skills                     ║\n");
         $this->output("║    /scripts  - List skill script tools                   ║\n");
         $this->output("║    /clear    - Clear screen                              ║\n");
         $this->output("║    /exit     - Exit the application                      ║\n");
+        $this->output("╠══════════════════════════════════════════════════════════╣\n");
+        $this->output("║  File shortcuts:                                         ║\n");
+        $this->output("║    @file.txt - Attach file inline with your message      ║\n");
+        $this->output("║    Drag & drop files into the terminal to attach them    ║\n");
         $this->output("╚══════════════════════════════════════════════════════════╝\n");
         $this->output("\n");
 
         while (true) {
-            $input = $this->prompt('phpbot> ');
+            $fileCount = $this->fileResolver->count();
+            $promptStr = $fileCount > 0 ? "phpbot [{$fileCount} files]> " : 'phpbot> ';
+            $input = $this->prompt($promptStr);
 
             if ($input === false || $input === null) {
                 break;
@@ -235,6 +247,13 @@ HELP;
                 continue;
             }
 
+            // Preprocess input: resolve @file references and detect drag-and-drop paths
+            $input = $this->preprocessInput($input);
+
+            if (empty($input)) {
+                continue;
+            }
+
             // Run the command
             $this->executeCommand($input);
         }
@@ -247,9 +266,15 @@ HELP;
     {
         $parts = explode(' ', $command, 2);
         $cmd = strtolower($parts[0]);
+        $arg = $parts[1] ?? '';
 
         return match ($cmd) {
             '/help' => $this->showInteractiveHelp(),
+            '/file' => $this->handleFileSearch($arg),
+            '/pick' => $this->handleFilePicker(),
+            '/files' => $this->showAttachedFiles(),
+            '/detach' => $this->handleDetach($arg),
+            '/attach' => $this->handleAttach($arg),
             '/tools' => $this->showTools(),
             '/skills' => $this->showSkills(),
             '/scripts' => $this->showScripts(),
@@ -267,16 +292,27 @@ HELP;
         $this->output("  PhpBot will analyze your request, select the\n");
         $this->output("  appropriate tools, and execute the task.\n\n");
         $this->output("  Special Commands:\n");
-        $this->output("    /help     - Show this help\n");
-        $this->output("    /tools    - List available tools\n");
-        $this->output("    /skills   - List available skills\n");
-        $this->output("    /scripts  - List skill script tools\n");
-        $this->output("    /clear    - Clear screen\n");
-        $this->output("    /exit     - Exit the application\n\n");
+        $this->output("    /help           - Show this help\n");
+        $this->output("    /file [query]   - Search & select a file to attach\n");
+        $this->output("    /pick           - Open macOS file picker dialog\n");
+        $this->output("    /attach <path>  - Attach a file by path\n");
+        $this->output("    /files          - List currently attached files\n");
+        $this->output("    /detach [path]  - Remove an attached file (all if no path)\n");
+        $this->output("    /tools          - List available tools\n");
+        $this->output("    /skills         - List available skills\n");
+        $this->output("    /scripts        - List skill script tools\n");
+        $this->output("    /clear          - Clear screen\n");
+        $this->output("    /exit           - Exit the application\n\n");
+        $this->output("  File Shortcuts:\n");
+        $this->output("    @file.txt       - Attach a file inline with your message\n");
+        $this->output("    @src/*.php      - Attach files matching a glob pattern\n");
+        $this->output("    @\"path/with spaces/file.txt\" - Quoted paths with spaces\n");
+        $this->output("    Drag & drop     - Drag files into the terminal to attach\n\n");
         $this->output("  Examples:\n");
-        $this->output("    • List all PHP files in current directory\n");
-        $this->output("    • Create a tool that fetches weather data\n");
-        $this->output("    • Run the unit tests and summarize results\n");
+        $this->output("    • Refactor @src/Bot.php to use dependency injection\n");
+        $this->output("    • Review @src/CLI/*.php for potential improvements\n");
+        $this->output("    • /file composer   (search for files matching 'composer')\n");
+        $this->output("    • /pick            (open file picker, then ask a question)\n");
         $this->output("\n");
         return 0;
     }
@@ -355,12 +391,18 @@ HELP;
 
     private function runSingleCommand(string $input, bool $verbose): int
     {
+        // Preprocess file references in single-command mode too
+        $input = $this->preprocessInput($input);
         return $this->executeCommand($input) ? 0 : 1;
     }
 
     private function executeCommand(string $input, bool $retryUnauthorized = true): bool
     {
         $this->output("\n");
+
+        // Build the effective input with file context
+        $effectiveInput = $this->buildInputWithFileContext($input);
+
         $this->output("⏳ Processing your request...\n");
 
         try {
@@ -395,7 +437,7 @@ HELP;
                 }
             };
 
-            $result = $this->bot->run($input, $onProgress);
+            $result = $this->bot->run($effectiveInput, $onProgress);
             $duration = round(microtime(true) - $startTime, 2);
 
             if ($result->isSuccess()) {
@@ -406,8 +448,14 @@ HELP;
 
                 // Show stats
                 $usage = $result->getTokenUsage();
+                $inputTokens = number_format($usage['input'] ?? 0);
+                $outputTokens = number_format($usage['output'] ?? 0);
+                $totalTokens = number_format($usage['total'] ?? 0);
+                $cost = $this->estimateCost($usage);
+
                 $this->output("\n📊 Stats: {$result->getIterations()} iterations, ");
-                $this->output("{$usage['total']} tokens, {$duration}s\n");
+                $this->output("{$totalTokens} tokens ({$inputTokens} in / {$outputTokens} out), ");
+                $this->output("{$duration}s, ~\${$cost}\n");
 
                 // Show tool calls if any
                 $toolCalls = $result->getToolCalls();
@@ -440,6 +488,216 @@ HELP;
             return false;
         }
     }
+
+    // -------------------------------------------------------------------------
+    // File management commands
+    // -------------------------------------------------------------------------
+
+    /**
+     * Search for files and attach the selected one.
+     */
+    private function handleFileSearch(string $query): int
+    {
+        $query = trim($query);
+        $searchQuery = $query !== '' ? $query : null;
+
+        $this->output("\n🔍 Searching for files" . ($searchQuery ? " matching '{$searchQuery}'" : '') . "...\n");
+
+        $path = $this->fileResolver->searchFiles($searchQuery);
+
+        if ($path === null) {
+            $this->output("  (no file selected)\n\n");
+            return 0;
+        }
+
+        $result = $this->fileResolver->attach($path);
+        if ($result['success']) {
+            $this->output("📎 Attached: {$this->fileResolver->getSummary()}\n\n");
+        } else {
+            $this->error("  ❌ {$result['error']}\n\n");
+        }
+
+        return 0;
+    }
+
+    /**
+     * Open the macOS file picker dialog.
+     */
+    private function handleFilePicker(): int
+    {
+        if (PHP_OS_FAMILY !== 'Darwin') {
+            $this->error("  ❌ File picker is only available on macOS. Use /file or @path instead.\n\n");
+            return 0;
+        }
+
+        $this->output("\n📂 Opening file picker...\n");
+        $path = $this->fileResolver->openFilePicker();
+
+        if ($path === null) {
+            $this->output("  (cancelled)\n\n");
+            return 0;
+        }
+
+        $result = $this->fileResolver->attach($path);
+        if ($result['success']) {
+            $this->output("📎 Attached: {$this->fileResolver->getSummary()}\n\n");
+        } else {
+            $this->error("  ❌ {$result['error']}\n\n");
+        }
+
+        return 0;
+    }
+
+    /**
+     * Attach a file explicitly by path.
+     */
+    private function handleAttach(string $path): int
+    {
+        $path = trim($path);
+        if ($path === '') {
+            $this->error("  Usage: /attach <path>\n\n");
+            return 0;
+        }
+
+        // Support glob patterns
+        if (str_contains($path, '*') || str_contains($path, '?')) {
+            $result = $this->fileResolver->attachGlob($path);
+            if (!empty($result['attached'])) {
+                $this->output("📎 Attached " . count($result['attached']) . " file(s):\n");
+                $this->output($this->fileResolver->getSummary() . "\n");
+            }
+            foreach ($result['errors'] as $error) {
+                $this->error("  ❌ {$error}\n");
+            }
+            if (empty($result['attached']) && empty($result['errors'])) {
+                $this->error("  No files matched pattern: {$path}\n");
+            }
+            $this->output("\n");
+            return 0;
+        }
+
+        $result = $this->fileResolver->attach($path);
+        if ($result['success']) {
+            $this->output("📎 Attached: {$this->fileResolver->getSummary()}\n\n");
+        } else {
+            $this->error("  ❌ {$result['error']}\n\n");
+        }
+
+        return 0;
+    }
+
+    /**
+     * Show currently attached files.
+     */
+    private function showAttachedFiles(): int
+    {
+        $count = $this->fileResolver->count();
+        $this->output("\n📎 Attached Files ({$count}):\n");
+        $this->output(str_repeat('-', 50) . "\n");
+
+        if ($count === 0) {
+            $this->output("  (no files attached)\n");
+            $this->output("\n  Tip: Use @file.txt, /file, /pick, or drag files into the terminal.\n");
+        } else {
+            $this->output($this->fileResolver->getSummary() . "\n");
+        }
+
+        $this->output("\n");
+        return 0;
+    }
+
+    /**
+     * Detach a file or all files.
+     */
+    private function handleDetach(string $path): int
+    {
+        $path = trim($path);
+
+        if ($path === '' || $path === 'all') {
+            $count = $this->fileResolver->count();
+            $this->fileResolver->clear();
+            $this->output("🗑️  Detached all {$count} file(s).\n\n");
+            return 0;
+        }
+
+        if ($this->fileResolver->detach($path)) {
+            $this->output("🗑️  Detached: {$path}\n\n");
+        } else {
+            $this->error("  ❌ File not found in attachments: {$path}\n\n");
+        }
+
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Input preprocessing
+    // -------------------------------------------------------------------------
+
+    /**
+     * Preprocess user input to resolve file references.
+     *
+     * Handles:
+     * - @file.txt and @path/to/file syntax
+     * - @glob patterns (e.g. @src/*.php)
+     * - Drag-and-drop absolute file paths
+     */
+    private function preprocessInput(string $input): string
+    {
+        $allAttached = [];
+        $allErrors = [];
+
+        // 1. Parse @file references
+        if (str_contains($input, '@')) {
+            $result = $this->fileResolver->parseAndAttach($input);
+            $input = $result['input'];
+            $allAttached = array_merge($allAttached, $result['attached']);
+            $allErrors = array_merge($allErrors, $result['errors']);
+        }
+
+        // 2. Detect drag-and-drop absolute paths
+        if (preg_match('#(?:^|\s)/\S+#', $input) || str_contains($input, "'/")) {
+            $result = $this->fileResolver->detectDragAndDrop($input);
+            $input = $result['input'];
+            $allAttached = array_merge($allAttached, $result['attached']);
+            $allErrors = array_merge($allErrors, $result['errors']);
+        }
+
+        // 3. Show feedback about attached files
+        if (!empty($allAttached)) {
+            $this->output("📎 Attached " . count($allAttached) . " file(s):\n");
+            foreach ($allAttached as $path) {
+                $this->output("   + {$path}\n");
+            }
+            $this->output("\n");
+        }
+
+        foreach ($allErrors as $error) {
+            $this->error("  ⚠️  {$error}\n");
+        }
+
+        return $input;
+    }
+
+    /**
+     * Build the effective input by prepending attached file context.
+     */
+    private function buildInputWithFileContext(string $input): string
+    {
+        $context = $this->fileResolver->buildContextBlock();
+
+        if ($context === '') {
+            return $input;
+        }
+
+        $fileCount = $this->fileResolver->count();
+        $this->output("📄 Including {$fileCount} attached file(s) as context\n");
+
+        return $context . "\n## User Request\n" . $input;
+    }
+
+    // -------------------------------------------------------------------------
+    // API key management
+    // -------------------------------------------------------------------------
 
     private function ensureApiKey(): bool
     {
@@ -504,6 +762,31 @@ HELP;
             || str_contains($needle, 'expired')
             || str_contains($needle, 'invalid api key')
             || str_contains($needle, '401');
+    }
+
+    /**
+     * Estimate cost based on token usage and configured model.
+     *
+     * Pricing per million tokens (as of 2026):
+     *   Haiku 4.5:  $1.00 input, $5.00 output
+     *   Sonnet 4.5: $3.00 input, $15.00 output
+     *   Opus 4.5:   $5.00 input, $25.00 output
+     */
+    private function estimateCost(array $usage): string
+    {
+        $model = $this->config['model'] ?? 'claude-sonnet-4-5';
+
+        $pricing = match (true) {
+            str_contains($model, 'haiku') => [1.00, 5.00],
+            str_contains($model, 'opus') => [5.00, 25.00],
+            default => [3.00, 15.00], // Sonnet pricing as default
+        };
+
+        $inputCost = (($usage['input'] ?? 0) / 1_000_000) * $pricing[0];
+        $outputCost = (($usage['output'] ?? 0) / 1_000_000) * $pricing[1];
+        $total = $inputCost + $outputCost;
+
+        return number_format($total, 4);
     }
 
     private function prompt(string $prompt): string|false

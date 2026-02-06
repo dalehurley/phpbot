@@ -10,6 +10,10 @@ use Dalehurley\Phpbot\Tools\WriteFileTool;
 use Dalehurley\Phpbot\Tools\EditFileTool;
 use Dalehurley\Phpbot\Tools\SkillScriptTool;
 use Dalehurley\Phpbot\Tools\AskUserTool;
+use Dalehurley\Phpbot\Tools\GetKeysTool;
+use Dalehurley\Phpbot\Tools\StoreKeysTool;
+use Dalehurley\Phpbot\Tools\SearchComputerTool;
+use Dalehurley\Phpbot\Tools\BrewTool;
 use Dalehurley\Phpbot\Tools\ToolBuilderTool;
 use Dalehurley\Phpbot\Tools\ToolPromoterTool;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
@@ -33,6 +37,10 @@ class ToolRegistrar
         $this->registry->register(new WriteFileTool());
         $this->registry->register(new EditFileTool());
         $this->registry->register(new AskUserTool());
+        $this->registry->register(new GetKeysTool($this->config));
+        $this->registry->register(new StoreKeysTool($this->config));
+        $this->registry->register(new SearchComputerTool());
+        $this->registry->register(new BrewTool($this->config));
 
         $this->registry->register(new ToolBuilderTool($this->registry));
         $this->registry->register(new ToolPromoterTool($this->registry));
@@ -42,30 +50,44 @@ class ToolRegistrar
         $this->registerPromotedTools();
     }
 
+    /** Core tools that are always selected when registered. */
+    private const CORE_TOOL_NAMES = [
+        'bash',
+        'write_file',
+        'read_file',
+        'edit_file',
+        'ask_user',
+        'get_keys',
+        'store_keys',
+        'search_computer',
+        'brew',
+        'tool_builder',
+        'tool_promoter',
+    ];
+
     public function selectTools(array $analysis): array
     {
         $tools = [];
+        $included = [];
 
-        if ($this->registry->has('bash')) {
-            $tools[] = $this->registry->get('bash');
+        // 1. Include all registered core tools
+        foreach (self::CORE_TOOL_NAMES as $name) {
+            if ($this->registry->has($name)) {
+                $tools[] = $this->registry->get($name);
+                $included[$name] = true;
+            }
         }
 
-        if ($this->registry->has('tool_builder')) {
-            $tools[] = $this->registry->get('tool_builder');
-        }
-
-        if ($this->registry->has('tool_promoter')) {
-            $tools[] = $this->registry->get('tool_promoter');
-        }
-
+        // 2. Include custom (user-created) tools
         $customTools = $this->registry->getCustomTools();
         foreach ($customTools as $tool) {
             $tools[] = $tool;
         }
 
+        // 3. Include analysis-suggested tools not already present
         if (!empty($analysis['potential_tools_needed'])) {
             foreach ($analysis['potential_tools_needed'] as $toolName) {
-                if ($this->registry->has($toolName) && !in_array($toolName, ['bash', 'tool_builder'])) {
+                if (!isset($included[$toolName]) && $this->registry->has($toolName)) {
                     $tools[] = $this->registry->get($toolName);
                 }
             }
