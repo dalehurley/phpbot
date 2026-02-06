@@ -76,19 +76,37 @@ class SkillAutoCreator
         $progress('skills', "Created skill: {$slug}{$scriptNote}");
     }
 
+    /**
+     * Determine if a successfully-completed task warrants creating a reusable skill.
+     * 
+     * The threshold should be LOW because:
+     * 1. Users asked for something and got it done - that's worth repeating
+     * 2. Storage is cheap; redundant skills are harmless
+     * 3. False negatives (not creating a skill) are worse than false positives
+     * 
+     * Skip ONLY if the task was:
+     * - Marked as "simple" by the analyzer
+     * - AND involves fewer than 2 explicit steps
+     * - AND doesn't appear to involve external integrations/tools
+     */
     private function shouldCreateSkill(array $analysis): bool
     {
         $complexity = $analysis['complexity'] ?? 'medium';
-        if ($complexity === 'simple') {
-            return false;
-        }
-
         $steps = (int) ($analysis['estimated_steps'] ?? 1);
-        if ($steps < 3) {
-            return false;
+        
+        // Always keep medium and complex tasks
+        if ($complexity !== 'simple') {
+            return true;
+        }
+        
+        // For simple tasks, require at least 2 steps to consider it repeatable
+        // Single-step simple tasks (e.g., "echo hello") are not worth capturing
+        if ($steps >= 2) {
+            return true;
         }
 
-        return true;
+        // Reject only the most trivial single-step simple tasks
+        return false;
     }
 
     private function extractScriptsFromToolCalls(array $toolCalls): array

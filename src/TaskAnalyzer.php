@@ -79,6 +79,19 @@ You are a task analyzer. Analyze the user's request and output a JSON object wit
     "potential_tools_needed": ["bash", "file_system", "custom_tool_name"]
 }
 
+COMPLEXITY GUIDELINES:
+- "simple": Single-action tasks that don't involve external services, file I/O, or user interaction (e.g., "echo hello", "list files in current directory")
+- "medium": Tasks that require multiple steps, external tool integration, APIs, or user interaction (e.g., "send an SMS", "fetch weather data", "create a file from template")
+- "complex": Multi-stage workflows, data processing, complex logic, multiple integrations (e.g., "build a PDF report from CSV", "analyze and categorize 100 images")
+
+ESTIMATED_STEPS should reflect the actual number of discrete tool calls needed, including:
+- Checking for prerequisites/credentials (get_keys)
+- Gathering user input (ask_user)
+- Executing main task (bash, write_file, etc.)
+- Verification/finalization steps
+
+For example, "send SMS to +1234567890 saying hello" should be estimated_steps: 3-4 (check credentials, ask for input if missing, call API, verify).
+
 Respond with ONLY the JSON object, no additional text.
 PROMPT;
     }
