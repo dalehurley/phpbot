@@ -70,6 +70,7 @@ class Bot
         $this->toolRegistrar->registerSearchCapabilitiesTool($this->skillManager);
         $this->toolRegistrar->registerSkillScriptTools($this->config['skills_path'] ?? '');
         $this->initKeyStore();
+        $this->initVendorTools();
         $this->initRouter();
     }
 
@@ -421,6 +422,33 @@ class Bot
         }
 
         $this->keyStore = new KeyStore($path);
+    }
+
+    /**
+     * Initialize cross-vendor DMF tools (OpenAI, Gemini).
+     *
+     * Reads API keys from the KeyStore and/or environment variables
+     * and registers vendor-specific tools (web search, image gen,
+     * code execution, grounding, TTS, etc.) when keys are available.
+     */
+    private function initVendorTools(): void
+    {
+        $enabled = (bool) ($this->config['vendor_tools_enabled'] ?? true);
+        if (!$enabled) {
+            $this->log('🔌 Cross-vendor tools disabled via config');
+            return;
+        }
+
+        try {
+            $this->toolRegistrar->registerVendorTools($this->keyStore);
+
+            $vendorToolNames = $this->toolRegistrar->getVendorToolNames();
+            if (!empty($vendorToolNames)) {
+                $this->log('🔌 Cross-vendor tools registered: ' . implode(', ', $vendorToolNames));
+            }
+        } catch (\Throwable $e) {
+            $this->log('⚠️ Cross-vendor tool registration failed: ' . $e->getMessage());
+        }
     }
 
     /**

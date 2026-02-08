@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Dalehurley\Phpbot;
 
+use ClaudeAgents\Vendor\CrossVendorToolFactory;
+use ClaudeAgents\Vendor\VendorConfig;
+use ClaudeAgents\Vendor\VendorRegistry;
 use Dalehurley\Phpbot\Tools\BashTool;
 use Dalehurley\Phpbot\Tools\ReadFileTool;
 use Dalehurley\Phpbot\Tools\WriteFileTool;
@@ -19,10 +22,14 @@ use Dalehurley\Phpbot\Tools\ToolBuilderTool;
 use Dalehurley\Phpbot\Tools\ToolPromoterTool;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
 use Dalehurley\Phpbot\Router\RouteResult;
+use Dalehurley\Phpbot\Storage\KeyStore;
 
 class ToolRegistrar
 {
     private ?SearchCapabilitiesTool $searchCapabilitiesTool = null;
+
+    /** @var string[] Names of registered vendor tools */
+    private array $vendorToolNames = [];
 
     public function __construct(
         private PersistentToolRegistry $registry,
@@ -64,6 +71,77 @@ class ToolRegistrar
         $this->registry->loadPersistedTools();
 
         $this->registerPromotedTools();
+    }
+
+    /**
+     * Register cross-vendor DMF tools (OpenAI, Gemini) from available API keys.
+     *
+     * Loads keys from the KeyStore first, then falls back to environment variables.
+     * Only creates tools for vendors with valid API keys.
+     */
+    public function registerVendorTools(?KeyStore $keyStore = null): void
+    {
+        $vendorRegistry = $this->buildVendorRegistry($keyStore);
+
+        if (!$vendorRegistry->hasExternalVendors()) {
+            return;
+        }
+
+        // Apply vendor-specific config overrides from phpbot config
+        $vendorConfigs = $this->config['vendor_configs'] ?? [];
+        foreach ($vendorConfigs as $vendor => $configArray) {
+            if (is_array($configArray)) {
+                $configArray['vendor'] = $vendor;
+                $vendorRegistry->setConfig($vendor, VendorConfig::fromArray($configArray));
+            }
+        }
+
+        $factory = new CrossVendorToolFactory($vendorRegistry);
+        $vendorTools = $factory->createAllTools();
+
+        foreach ($vendorTools as $tool) {
+            $this->registry->register($tool);
+            $this->vendorToolNames[] = $tool->getName();
+        }
+    }
+
+    /**
+     * Get the names of registered vendor tools.
+     *
+     * @return string[]
+     */
+    public function getVendorToolNames(): array
+    {
+        return $this->vendorToolNames;
+    }
+
+    /**
+     * Build a VendorRegistry populated from the KeyStore and environment.
+     */
+    private function buildVendorRegistry(?KeyStore $keyStore): VendorRegistry
+    {
+        $registry = VendorRegistry::fromEnvironment();
+
+        if ($keyStore === null) {
+            return $registry;
+        }
+
+        // Load keys from KeyStore (phpbot's persistent key storage)
+        $keyMap = [
+            'openai'  => 'openai_api_key',
+            'google'  => 'gemini_api_key',
+        ];
+
+        foreach ($keyMap as $vendor => $keyName) {
+            if (!$registry->isAvailable($vendor)) {
+                $key = $keyStore->get($keyName);
+                if (is_string($key) && $key !== '') {
+                    $registry->registerKey($vendor, $key);
+                }
+            }
+        }
+
+        return $registry;
     }
 
     /** Core tools that are always selected when registered. */
@@ -133,6 +211,15 @@ class ToolRegistrar
             }
         }
 
+        // Always include cross-vendor DMF tools (unique capabilities
+        // like web search, grounding, code execution, image gen, TTS)
+        foreach ($this->vendorToolNames as $name) {
+            if (!isset($included[$name]) && $this->registry->has($name)) {
+                $tools[] = $this->registry->get($name);
+                $included[$name] = true;
+            }
+        }
+
         // Include tools specified by the router
         foreach ($routeResult->tools as $toolName) {
             if (!isset($included[$toolName]) && $this->registry->has($toolName)) {
@@ -166,6 +253,14 @@ class ToolRegistrar
         if (!isset($included['search_capabilities']) && $this->registry->has('search_capabilities')) {
             $tools[] = $this->registry->get('search_capabilities');
             $included['search_capabilities'] = true;
+        }
+
+        // 1c. Include cross-vendor DMF tools
+        foreach ($this->vendorToolNames as $name) {
+            if (!isset($included[$name]) && $this->registry->has($name)) {
+                $tools[] = $this->registry->get($name);
+                $included[$name] = true;
+            }
         }
 
         // 2. Include custom (user-created) tools

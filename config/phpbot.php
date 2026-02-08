@@ -189,6 +189,36 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Cross-Vendor Dynamic Model Fusion (DMF)
+    |--------------------------------------------------------------------------
+    | Enables Claude to orchestrate other LLM vendors (OpenAI, Gemini) as
+    | callable tools during agent execution. API keys are loaded from the
+    | KeyStore (storage/keys.json) and/or environment variables.
+    |
+    | Available tools when keys are set:
+    |   OPENAI_API_KEY  -> openai_web_search, openai_image_generation, openai_text_to_speech
+    |   GEMINI_API_KEY  -> gemini_grounding, gemini_code_execution, gemini_image_generation
+    |   Both            -> vendor_chat (cross-vendor model delegation)
+    |
+    | Keys can be stored via: store_keys tool, keys.json, or env variables.
+    */
+    'vendor_tools_enabled' => (bool) $env('PHPBOT_VENDOR_TOOLS_ENABLED', true),
+    'vendor_configs' => [
+        'openai' => array_filter([
+            'default_chat_model'  => $env('PHPBOT_OPENAI_CHAT_MODEL', null),
+            'default_image_model' => $env('PHPBOT_OPENAI_IMAGE_MODEL', null),
+            'default_tts_model'   => $env('PHPBOT_OPENAI_TTS_MODEL', null),
+            'timeout'             => $env('PHPBOT_OPENAI_TIMEOUT', null),
+        ], static fn($v) => $v !== null),
+        'google' => array_filter([
+            'default_chat_model'  => $env('PHPBOT_GEMINI_CHAT_MODEL', null),
+            'default_image_model' => $env('PHPBOT_GEMINI_IMAGE_MODEL', null),
+            'timeout'             => $env('PHPBOT_GEMINI_TIMEOUT', null),
+        ], static fn($v) => $v !== null),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Stale Loop Detection
     |--------------------------------------------------------------------------
     | Controls when the agent is stopped for being stuck in a loop.
