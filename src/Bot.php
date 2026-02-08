@@ -9,6 +9,11 @@ use ClaudeAgents\Skills\SkillManager;
 use ClaudeAgents\Skills\SkillPromptComposer;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
 use Dalehurley\Phpbot\Agent\AgentSelector;
+use Dalehurley\Phpbot\Prompt\TieredPromptBuilder;
+use Dalehurley\Phpbot\Router\CachedRouter;
+use Dalehurley\Phpbot\Router\ClassifierClient;
+use Dalehurley\Phpbot\Router\RouteResult;
+use Dalehurley\Phpbot\Router\RouterCache;
 use Dalehurley\Phpbot\Storage\KeyStore;
 
 class Bot
@@ -21,6 +26,8 @@ class Bot
     private bool $verbose;
     private ?SkillManager $skillManager = null;
     private ?KeyStore $keyStore = null;
+    private ?RouterCache $routerCache = null;
+    private ?CachedRouter $router = null;
 
     public function __construct(array $config = [], bool $verbose = false)
     {
@@ -33,8 +40,10 @@ class Bot
 
         $this->toolRegistrar->registerCoreTools();
         $this->initSkills();
+        $this->toolRegistrar->registerSearchCapabilitiesTool($this->skillManager);
         $this->toolRegistrar->registerSkillScriptTools($this->config['skills_path'] ?? '');
         $this->initKeyStore();
+        $this->initRouter();
     }
 
     /**
@@ -45,58 +54,106 @@ class Bot
         $progress = $onProgress ?? fn($stage, $msg) => null;
         $clientFactory = fn() => $this->getClient();
 
-        $summarizer = new ProgressSummarizer($clientFactory, $this->config['model'], $this->getFastModel());
-        $skillAutoCreator = new SkillAutoCreator($clientFactory, $this->config, $this->skillManager);
-
         $this->log("📝 Received input: {$input}");
         $progress('start', 'Received input');
 
-        // 1. Resolve skills FIRST (cheap keyword matching, no LLM call)
+        // =====================================================================
+        // Phase 1: Router — try to resolve without the agent
+        // =====================================================================
+
+        $routeResult = $this->router !== null
+            ? $this->router->route($input)
+            : null;
+
+        // Tier 0/1: Early exit — answer directly without any LLM call
+        if ($routeResult !== null && $routeResult->isEarlyExit()) {
+            $this->log("⚡ Router early-exit (tier: {$routeResult->tier})");
+            $progress('routed', "Resolved via router ({$routeResult->tier}) — 0 tokens");
+
+            $answer = $routeResult->resolve();
+
+            return new BotResult(
+                success: true,
+                answer: $answer,
+                error: null,
+                iterations: 0,
+                toolCalls: [],
+                tokenUsage: ['input' => 0, 'output' => 0, 'total' => 0],
+                analysis: ['tier' => $routeResult->tier, 'routed' => true]
+            );
+        }
+
+        // =====================================================================
+        // Phase 2: Agent execution — Tier 2/3 or legacy path
+        // =====================================================================
+
+        $summarizer = new ProgressSummarizer($clientFactory, $this->config['model'], $this->getFastModel());
+        $skillAutoCreator = new SkillAutoCreator($clientFactory, $this->config, $this->skillManager);
+
+        // Resolve skills (cheap keyword matching, no LLM call)
         $resolvedSkills = $this->resolveSkills($input);
         if (!empty($resolvedSkills)) {
             $progress('skills', 'Skills: ' . implode(', ', array_map(fn($s) => $s->getName(), $resolvedSkills)));
         }
 
-        // 2. Determine if we can use the skill fast-path
-        $skillFastPath = $this->shouldUseSkillFastPath($resolvedSkills, $input);
-
-        // 3. Analyze the task (or use fast-path to skip the LLM analysis call)
+        // Build analysis — from route result or skill fast-path or TaskAnalyzer
         $progress('analyzing', 'Analyzing task requirements...');
-        if ($skillFastPath) {
-            $analysis = $this->buildSkillFastPathAnalysis($resolvedSkills[0]);
-            $this->log("🎯 Task analysis complete (skill fast-path)");
-        } else {
-            $taskAnalyzer = new TaskAnalyzer($clientFactory, $this->config['model']);
-            $analysis = $taskAnalyzer->analyze($input);
-            $this->log("🎯 Task analysis complete");
-        }
+        $analysis = $this->buildAnalysis($input, $routeResult, $resolvedSkills, $clientFactory);
         $progress('analyzed', 'Task analysis complete');
 
-        // 4. Build dynamic config based on analysis & skills
+        // Merge any skill names from the route result into resolved skills
+        if ($routeResult !== null && !empty($routeResult->skills) && $this->skillManager !== null) {
+            foreach ($routeResult->skills as $skillName) {
+                try {
+                    $skill = $this->skillManager->get($skillName);
+                    $alreadyResolved = false;
+                    foreach ($resolvedSkills as $rs) {
+                        if ($rs->getName() === $skillName) {
+                            $alreadyResolved = true;
+
+                            break;
+                        }
+                    }
+                    if (!$alreadyResolved) {
+                        $resolvedSkills[] = $skill;
+                    }
+                } catch (\Throwable) {
+                    // Skill not found, skip
+                }
+            }
+        }
+
+        // Build dynamic config
         $dynamicConfig = $this->buildDynamicConfig($analysis, $resolvedSkills);
         $effectiveConfig = array_merge($this->config, $dynamicConfig, [
             'iteration_summarizer' => $summarizer,
         ]);
         $agentFactory = new AgentFactory($clientFactory, $effectiveConfig, $this->verbose);
 
-        // 5. Summarize plan (skip on fast-path to save time/cost)
-        if (!$skillFastPath) {
+        // Summarize plan (skip for routed or skill fast-path)
+        $isRoutedOrFastPath = $routeResult !== null || $this->shouldUseSkillFastPath($resolvedSkills, $input);
+        if (!$isRoutedOrFastPath) {
             $beforeSummary = $summarizer->summarizeBefore($input, $analysis);
             if ($beforeSummary !== '') {
                 $progress('summary_before', "Summary: {$beforeSummary}");
             }
         }
 
-        // 6. Select agent and tools
-        $agentType = $this->agentSelector->selectAgent($analysis);
-        $tools = $this->toolRegistrar->selectTools($analysis);
-        $systemPrompt = $this->composeSystemPrompt($analysis, $resolvedSkills, $agentFactory);
+        // Select agent type and tools — using route result for selective loading
+        $agentType = $routeResult !== null
+            ? ($routeResult->agentType ?: $this->agentSelector->selectAgent($analysis))
+            : $this->agentSelector->selectAgent($analysis);
+
+        $tools = $this->toolRegistrar->selectTools($analysis, $routeResult);
+
+        // Build system prompt — tiered when routed, full otherwise
+        $systemPrompt = $this->buildSystemPrompt($routeResult, $analysis, $resolvedSkills, $agentFactory);
 
         $this->log("🤖 Selected agent: {$agentType}");
         $this->log("🔧 Selected tools: " . implode(', ', array_map(fn($t) => $t->getName(), $tools)));
         $progress('selected', "Selected {$agentType} agent with " . count($tools) . " tools");
 
-        // 7. Create and run the agent
+        // Create and run the agent
         $agent = $agentFactory->create($agentType, $tools, $systemPrompt, $analysis, $progress);
         $enhancedPrompt = $agentFactory->buildEnhancedPrompt($input, $analysis, $resolvedSkills);
 
@@ -104,16 +161,18 @@ class Bot
         $result = $agent->run($enhancedPrompt);
         $progress('complete', 'Task execution complete');
 
-        // 8. Summarize after execution
+        // Summarize after execution
         $afterSummary = $summarizer->summarizeAfter($input, $analysis, $result);
         if ($afterSummary !== '') {
             $progress('summary_after', "Summary: {$afterSummary}");
         }
 
-        // 9. Auto-create skill if appropriate
+        // Auto-create skill and append to router cache
         $skillAutoCreator->autoCreate($input, $analysis, $result, $resolvedSkills, $progress);
         if ($this->skillManager !== null) {
             $this->initSkills(); // Re-discover skills after potential creation
+            // Append any new skills/tools to the router cache
+            $this->syncRouterCache();
         }
 
         return new BotResult(
@@ -225,6 +284,139 @@ class Bot
     }
 
     /**
+     * Initialize the router cache and router.
+     *
+     * On first boot (no cache file), generates the manifest using the
+     * classifier client (auto-detects best available LLM provider).
+     * On subsequent boots, loads from disk and appends any new items.
+     */
+    private function initRouter(): void
+    {
+        $storagePath = dirname($this->config['tools_storage_path'] ?? dirname(__DIR__) . '/storage/tools');
+        $this->routerCache = new RouterCache($storagePath);
+
+        // Create the classifier client (shared by cache generation + routing)
+        $classifier = new ClassifierClient(
+            config: $this->config['classifier'] ?? [],
+            providerOverride: $this->config['classifier_provider'] ?? 'auto',
+            clientFactory: fn() => $this->getClient(),
+            fastModel: $this->getFastModel(),
+        );
+        $classifier->setLogger(fn(string $msg) => $this->log("🧠 {$msg}"));
+
+        if (!$this->routerCache->load()) {
+            // First boot — generate the full manifest
+            try {
+                $this->log('🔄 Generating router cache (first boot)...');
+                $this->routerCache->generate(
+                    $classifier,
+                    $this->skillManager ?? new SkillManager(dirname(__DIR__) . '/skills'),
+                    $this->toolRegistry,
+                );
+                $this->log('✅ Router cache generated');
+            } catch (\Throwable $e) {
+                $this->log('⚠️ Router cache generation failed: ' . $e->getMessage());
+                // Router will be null — falls back to legacy path
+                $this->routerCache = null;
+                $this->router = null;
+
+                return;
+            }
+        } else {
+            // Sync any new skills/tools that were added since last cache
+            $this->syncRouterCache();
+        }
+
+        $this->router = new CachedRouter(
+            $this->routerCache,
+            $classifier,
+            $this->skillManager,
+        );
+        $this->router->setLogger(fn(string $msg) => $this->log("🧠 {$msg}"));
+    }
+
+    /**
+     * Sync the router cache with current skills/tools (incremental append).
+     */
+    private function syncRouterCache(): void
+    {
+        if ($this->routerCache === null || $this->skillManager === null) {
+            return;
+        }
+
+        if ($this->routerCache->isStale($this->skillManager, $this->toolRegistry)) {
+            $this->routerCache->sync($this->skillManager, $this->toolRegistry);
+            $this->log('🔄 Router cache synced with new skills/tools');
+        }
+    }
+
+    /**
+     * Build the analysis array from the best available source.
+     *
+     * Priority: RouteResult > Skill fast-path > TaskAnalyzer LLM call
+     */
+    private function buildAnalysis(string $input, ?RouteResult $routeResult, array $resolvedSkills, \Closure $clientFactory): array
+    {
+        // If the router matched a category, use its analysis
+        if ($routeResult !== null) {
+            $analysis = $routeResult->toAnalysis();
+            $this->log("🎯 Task analysis complete (router tier: {$routeResult->tier})");
+
+            return $analysis;
+        }
+
+        // Skill fast-path
+        if ($this->shouldUseSkillFastPath($resolvedSkills, $input)) {
+            $analysis = $this->buildSkillFastPathAnalysis($resolvedSkills[0]);
+            $this->log('🎯 Task analysis complete (skill fast-path)');
+
+            return $analysis;
+        }
+
+        // Fallback: LLM-based analysis
+        $taskAnalyzer = new TaskAnalyzer($clientFactory, $this->config['model']);
+        $analysis = $taskAnalyzer->analyze($input);
+        $this->log('🎯 Task analysis complete (LLM)');
+
+        return $analysis;
+    }
+
+    /**
+     * Build the system prompt using tiered prompts when routed,
+     * or the full legacy prompt when not.
+     */
+    private function buildSystemPrompt(
+        ?RouteResult $routeResult,
+        array $analysis,
+        array $resolvedSkills,
+        AgentFactory $agentFactory,
+    ): string {
+        $promptBuilder = new TieredPromptBuilder();
+        $maxIter = (int) ($this->config['max_iterations'] ?? 25);
+
+        if ($routeResult !== null) {
+            // Use the tiered prompt from the route result
+            $basePrompt = $promptBuilder->build($routeResult->promptTier, $analysis, $maxIter);
+        } else {
+            // Legacy: use the full prompt from AgentFactory
+            $basePrompt = $agentFactory->getSystemPrompt($analysis);
+        }
+
+        // Compose with skill instructions (loaded skills get full instructions,
+        // unloaded skills are no longer listed in the prompt — they're available
+        // via search_capabilities instead)
+        if (!empty($resolvedSkills)) {
+            $composer = new SkillPromptComposer();
+
+            // Only include loaded skills, NOT the full summaries index.
+            // The search_capabilities tool replaces the need for summaries in the prompt.
+            return $composer->compose($basePrompt, $resolvedSkills);
+        }
+
+        return $basePrompt;
+    }
+
+    /**
      * Determine if a high-confidence skill match allows us to skip
      * the full LLM-based task analysis and use a fast-path instead.
      */
@@ -316,22 +508,6 @@ class Bot
             return $this->skillManager->resolve($input);
         } catch (\Throwable $e) {
             return [];
-        }
-    }
-
-    private function composeSystemPrompt(array $analysis, array $resolvedSkills, AgentFactory $agentFactory): string
-    {
-        $basePrompt = $agentFactory->getSystemPrompt($analysis);
-        if ($this->skillManager === null) {
-            return $basePrompt;
-        }
-
-        try {
-            $composer = new SkillPromptComposer();
-            $summaries = $this->skillManager->summaries();
-            return $composer->composeWithDiscovery($basePrompt, $resolvedSkills, $summaries);
-        } catch (\Throwable $e) {
-            return $basePrompt;
         }
     }
 

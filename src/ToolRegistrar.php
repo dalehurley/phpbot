@@ -13,13 +13,17 @@ use Dalehurley\Phpbot\Tools\AskUserTool;
 use Dalehurley\Phpbot\Tools\GetKeysTool;
 use Dalehurley\Phpbot\Tools\StoreKeysTool;
 use Dalehurley\Phpbot\Tools\SearchComputerTool;
+use Dalehurley\Phpbot\Tools\SearchCapabilitiesTool;
 use Dalehurley\Phpbot\Tools\BrewTool;
 use Dalehurley\Phpbot\Tools\ToolBuilderTool;
 use Dalehurley\Phpbot\Tools\ToolPromoterTool;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
+use Dalehurley\Phpbot\Router\RouteResult;
 
 class ToolRegistrar
 {
+    private ?SearchCapabilitiesTool $searchCapabilitiesTool = null;
+
     public function __construct(
         private PersistentToolRegistry $registry,
         private array $config
@@ -28,6 +32,17 @@ class ToolRegistrar
     public function getRegistry(): PersistentToolRegistry
     {
         return $this->registry;
+    }
+
+    /**
+     * Register the SearchCapabilitiesTool with its dependencies.
+     * Called from Bot after SkillManager is initialized.
+     */
+    public function registerSearchCapabilitiesTool(
+        ?\ClaudeAgents\Skills\SkillManager $skillManager = null,
+    ): void {
+        $this->searchCapabilitiesTool = new SearchCapabilitiesTool($skillManager, $this->registry);
+        $this->registry->register($this->searchCapabilitiesTool);
     }
 
     public function registerCoreTools(): void
@@ -65,7 +80,71 @@ class ToolRegistrar
         'tool_promoter',
     ];
 
-    public function selectTools(array $analysis): array
+    /** Minimal tools always present for routed requests. */
+    private const MINIMAL_TOOL_NAMES = [
+        'bash',
+        'search_capabilities',
+    ];
+
+    /**
+     * Select tools for an agent run.
+     *
+     * When a RouteResult is provided, only the tools specified by the
+     * router are loaded (plus bash + search_capabilities). This avoids
+     * sending all 12+ core tool schemas for simple tasks.
+     *
+     * Falls back to loading all core tools when no RouteResult is given.
+     *
+     * @param array $analysis Task analysis array
+     * @param RouteResult|null $routeResult Optional route result for selective loading
+     * @return array<\ClaudeAgents\Contracts\ToolInterface>
+     */
+    public function selectTools(array $analysis, ?RouteResult $routeResult = null): array
+    {
+        // Selective loading when router provides a tool list
+        if ($routeResult !== null && !$routeResult->isEarlyExit()) {
+            return $this->selectRoutedTools($routeResult);
+        }
+
+        // Legacy path: load all core tools
+        return $this->selectAllCoreTools($analysis);
+    }
+
+    /**
+     * Select only the tools specified by the router.
+     *
+     * @return array<\ClaudeAgents\Contracts\ToolInterface>
+     */
+    private function selectRoutedTools(RouteResult $routeResult): array
+    {
+        $tools = [];
+        $included = [];
+
+        // Always include minimal tools
+        foreach (self::MINIMAL_TOOL_NAMES as $name) {
+            if ($this->registry->has($name)) {
+                $tools[] = $this->registry->get($name);
+                $included[$name] = true;
+            }
+        }
+
+        // Include tools specified by the router
+        foreach ($routeResult->tools as $toolName) {
+            if (!isset($included[$toolName]) && $this->registry->has($toolName)) {
+                $tools[] = $this->registry->get($toolName);
+                $included[$toolName] = true;
+            }
+        }
+
+        return $tools;
+    }
+
+    /**
+     * Legacy: select all core tools plus analysis-suggested tools.
+     *
+     * @return array<\ClaudeAgents\Contracts\ToolInterface>
+     */
+    private function selectAllCoreTools(array $analysis): array
     {
         $tools = [];
         $included = [];
@@ -76,6 +155,12 @@ class ToolRegistrar
                 $tools[] = $this->registry->get($name);
                 $included[$name] = true;
             }
+        }
+
+        // 1b. Include search_capabilities if registered
+        if (!isset($included['search_capabilities']) && $this->registry->has('search_capabilities')) {
+            $tools[] = $this->registry->get('search_capabilities');
+            $included['search_capabilities'] = true;
         }
 
         // 2. Include custom (user-created) tools

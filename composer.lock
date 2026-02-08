@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "a7900d4b8f1083956629e929450c86cb",
+    "content-hash": "da3d3cc62372989ee3d5069233475f30",
     "packages": [
         {
             "name": "amphp/amp",
@@ -152,17 +152,11 @@
         },
         {
             "name": "claude-php/agent",
-            "version": "v1.4.6",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/claude-php/claude-php-agent.git",
-                "reference": "e90dd246de736db36092f66802d0e1f6c8871091"
-            },
+            "version": "dev-master",
             "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/claude-php/claude-php-agent/zipball/e90dd246de736db36092f66802d0e1f6c8871091",
-                "reference": "e90dd246de736db36092f66802d0e1f6c8871091",
-                "shasum": ""
+                "type": "path",
+                "url": "../claude-php-agent",
+                "reference": "e90dd246de736db36092f66802d0e1f6c8871091"
             },
             "require": {
                 "claude-php/claude-php-sdk": "^0.5",
@@ -185,7 +179,44 @@
                     "ClaudeAgents\\": "src/"
                 }
             },
-            "notification-url": "https://packagist.org/downloads/",
+            "autoload-dev": {
+                "psr-4": {
+                    "ClaudeAgents\\Tests\\": "tests/"
+                }
+            },
+            "scripts": {
+                "test": [
+                    "phpunit --testdox"
+                ],
+                "test:unit": [
+                    "phpunit --testsuite=Unit --testdox"
+                ],
+                "test:integration": [
+                    "phpunit --testsuite=Integration --testdox"
+                ],
+                "test:coverage": [
+                    "phpunit --coverage-html coverage --coverage-text"
+                ],
+                "analyse": [
+                    "phpstan analyse src --level=6 --memory-limit=512M"
+                ],
+                "format": [
+                    "php-cs-fixer fix --verbose"
+                ],
+                "format:check": [
+                    "php-cs-fixer fix --dry-run --diff --verbose"
+                ],
+                "check": [
+                    "@format:check",
+                    "@analyse",
+                    "@test"
+                ],
+                "check:full": [
+                    "@format:check",
+                    "@analyse",
+                    "@test:coverage"
+                ]
+            },
             "license": [
                 "MIT"
             ],
@@ -199,8 +230,7 @@
             "description": "A powerful PHP framework for building AI agents with Claude, featuring ReAct loops, tool orchestration, and advanced agentic patterns",
             "homepage": "https://github.com/claude-php/agent",
             "keywords": [
-                "Agent",
-                "Multi-agent",
+                "agent",
                 "agentic",
                 "ai",
                 "anthropic",
@@ -208,6 +238,7 @@
                 "chain-of-thought",
                 "claude",
                 "llm",
+                "multi-agent",
                 "plan-execute",
                 "rag",
                 "react",
@@ -215,11 +246,14 @@
                 "tool-use"
             ],
             "support": {
-                "docs": "https://github.com/claude-php/agent/blob/main/README.md",
                 "issues": "https://github.com/claude-php/agent/issues",
-                "source": "https://github.com/claude-php/agent"
+                "source": "https://github.com/claude-php/agent",
+                "docs": "https://github.com/claude-php/agent/blob/main/README.md"
             },
-            "time": "2026-02-06T03:24:39+00:00"
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
         },
         {
             "name": "claude-php/claude-php-sdk",
@@ -3072,7 +3106,9 @@
     "packages-dev": [],
     "aliases": [],
     "minimum-stability": "stable",
-    "stability-flags": {},
+    "stability-flags": {
+        "claude-php/agent": 20
+    },
     "prefer-stable": false,
     "prefer-lowest": false,
     "platform": {

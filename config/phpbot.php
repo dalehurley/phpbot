@@ -90,6 +90,46 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Router Classifier
+    |--------------------------------------------------------------------------
+    | Controls which LLM provider classifies requests that don't match the
+    | local cache. Most requests are handled by the PHP native TF-IDF
+    | classifier (zero tokens). Only ambiguous requests fall through to
+    | the LLM classifier cascade:
+    |
+    | Auto-detection priority:
+    |   1. Apple Foundation Models (macOS 26+, on-device, free)
+    |   2. MLX server (Apple Silicon, tiny model, free)
+    |   3. Ollama (local, free)
+    |   4. LM Studio (local, free)
+    |   5. Groq (cloud, free tier)
+    |   6. Google Gemini (cloud, very cheap)
+    |   7. Anthropic Haiku (cloud, always available)
+    |
+    | Provider options: auto, apple_fm, mlx, ollama, lmstudio, groq, gemini, anthropic
+    |
+    | Setup guides:
+    |   Apple FM:  Requires macOS 26+ with Apple Intelligence. Auto-compiles Swift bridge.
+    |   MLX:       pip install mlx-lm && python bin/mlx-classify-server.py
+    |   Ollama:    brew install ollama && ollama pull qwen2.5:1.5b
+    |   LM Studio: https://lmstudio.ai — load any model, enable local server
+    |   Groq:      https://console.groq.com — free tier, get API key
+    |   Gemini:    https://aistudio.google.com — get API key
+    */
+    'classifier_provider' => $env('PHPBOT_CLASSIFIER_PROVIDER', 'auto'),
+    'classifier' => [
+        'mlx_url'        => $env('PHPBOT_CLASSIFIER_MLX_URL', 'http://localhost:5127'),
+        'groq_api_key'   => $env('GROQ_API_KEY', ''),
+        'groq_model'     => $env('PHPBOT_CLASSIFIER_GROQ_MODEL', 'llama-3.3-70b-versatile'),
+        'gemini_api_key' => $env('GEMINI_API_KEY', ''),
+        'gemini_model'   => $env('PHPBOT_CLASSIFIER_GEMINI_MODEL', 'gemini-3-flash-preview'),
+        'ollama_url'     => $env('PHPBOT_CLASSIFIER_OLLAMA_URL', 'http://localhost:11434'),
+        'ollama_model'   => $env('PHPBOT_CLASSIFIER_OLLAMA_MODEL', 'qwen2.5:1.5b'),
+        'lmstudio_url'   => $env('PHPBOT_CLASSIFIER_LMSTUDIO_URL', 'http://localhost:1234'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Stale Loop Detection
     |--------------------------------------------------------------------------
     | Controls when the agent is stopped for being stuck in a loop.

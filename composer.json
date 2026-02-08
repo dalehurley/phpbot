@@ -2,11 +2,20 @@
     "name": "dalehurley/phpbot",
     "description": "PHP Bot for automating your life - An evolving AI assistant powered by Claude",
     "type": "project",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../claude-php-agent",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
     "require": {
         "php": "^8.2",
         "ext-readline": "*",
         "cboden/ratchet": "^0.4.4",
-        "claude-php/agent": "^1.4.6",
+        "claude-php/agent": "@dev",
         "claude-php/claude-php-sdk": "^0.5.3",
         "phpoffice/phpword": "^1.0",
         "react/datagram": "^1.2"
