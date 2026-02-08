@@ -45,6 +45,16 @@ class Application
             return $this->listTools($args['verbose']);
         }
 
+        // First-run setup: no .env and no API key configured anywhere
+        if ($this->isFirstRun()) {
+            $wizard = $this->createSetupWizard();
+            if (!$wizard->run()) {
+                return 1;
+            }
+            // Reload config after setup wrote .env
+            $this->reloadEnvAndConfig();
+        }
+
         // Ensure API key is available
         if (!$this->ensureApiKey()) {
             return 1;
@@ -220,6 +230,7 @@ HELP;
         $this->output("╠══════════════════════════════════════════════════════════╣\n");
         $this->output("║  Commands:                                               ║\n");
         $this->output("║    /help     - Show help                                 ║\n");
+        $this->output("║    /setup    - Run setup wizard (configure keys & env)   ║\n");
         $this->output("║    /file     - Search & select files to attach           ║\n");
         $this->output("║    /pick     - Open native file picker dialog             ║\n");
         $this->output("║    /files    - List attached files                       ║\n");
@@ -294,6 +305,7 @@ HELP;
 
         return match ($cmd) {
             '/help' => $this->showInteractiveHelp(),
+            '/setup' => $this->runSetup(),
             '/file' => $this->handleFileSearch($arg),
             '/pick' => $this->handleFilePicker(),
             '/files' => $this->showAttachedFiles(),
@@ -319,6 +331,7 @@ HELP;
         $this->output("  appropriate tools, and execute the task.\n\n");
         $this->output("  Special Commands:\n");
         $this->output("    /help           - Show this help\n");
+        $this->output("    /setup          - Run setup wizard (API keys, .env config)\n");
         $this->output("    /file [query]   - Search & select a file to attach\n");
         $this->output("    /pick           - Open native file picker dialog\n");
         $this->output("    /attach <path>  - Attach a file by path\n");
@@ -864,6 +877,100 @@ HELP;
         $this->output("📄 Including {$fileCount} attached file(s) as context\n");
 
         return $context . "\n## User Request\n" . $input;
+    }
+
+    // -------------------------------------------------------------------------
+    // Setup wizard
+    // -------------------------------------------------------------------------
+
+    /**
+     * Check if this is the first run (no .env and no API key available).
+     */
+    private function isFirstRun(): bool
+    {
+        $envPath = dirname(__DIR__, 2) . '/.env';
+        if (is_file($envPath)) {
+            return false;
+        }
+
+        // No .env, but maybe the user has a key via env var or KeyStore
+        return $this->resolveApiKey() === '';
+    }
+
+    /**
+     * Run the setup wizard (from /setup command or first run).
+     */
+    private function runSetup(): int
+    {
+        $wizard = $this->createSetupWizard();
+        $wizard->run();
+
+        // Reload config so the rest of the session uses the new values
+        $this->reloadEnvAndConfig();
+
+        // Re-initialize bot with new config if it exists
+        if ($this->bot !== null) {
+            $apiKey = $this->resolveApiKey();
+            if ($apiKey !== '') {
+                $this->config['api_key'] = $apiKey;
+                $this->bot = new Bot($this->config, $this->verbose);
+                if ($this->conversationHistory !== null) {
+                    $this->bot->setConversationHistory($this->conversationHistory);
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    private function createSetupWizard(): SetupWizard
+    {
+        $projectRoot = dirname(__DIR__, 2);
+
+        return new SetupWizard(
+            fn(string $msg) => $this->output($msg),
+            fn(string $prompt) => $this->prompt($prompt),
+            $projectRoot,
+            $this->getKeyStore(),
+        );
+    }
+
+    /**
+     * Reload .env variables and config after setup writes new values.
+     */
+    private function reloadEnvAndConfig(): void
+    {
+        $envPath = dirname(__DIR__, 2) . '/.env';
+        if (!is_file($envPath)) {
+            return;
+        }
+
+        $lines = file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if ($lines === false) {
+            return;
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+            [$key, $value] = array_pad(explode('=', $line, 2), 2, '');
+            $key = trim($key);
+            $value = trim($value);
+            $value = trim($value, "\"'");
+            if ($key !== '') {
+                putenv($key . '=' . $value);
+                $_ENV[$key] = $value;
+                $_SERVER[$key] = $value;
+            }
+        }
+
+        // Reload config array
+        $configPath = dirname(__DIR__, 2) . '/config/phpbot.php';
+        if (file_exists($configPath)) {
+            $this->config = require $configPath;
+        }
     }
 
     // -------------------------------------------------------------------------
