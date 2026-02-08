@@ -10,6 +10,16 @@ use ClaudeAgents\Tools\ToolResult;
 
 class WriteFileTool implements ToolInterface
 {
+    private string $storagePath;
+
+    /** @var array<string> Paths of files created during this session */
+    private array $createdFiles = [];
+
+    public function __construct(string $storagePath = '')
+    {
+        $this->storagePath = $storagePath;
+    }
+
     public function getName(): string
     {
         return 'write_file';
@@ -17,7 +27,9 @@ class WriteFileTool implements ToolInterface
 
     public function getDescription(): string
     {
-        return 'Write content to a file on disk. Use for creating or overwriting files.';
+        return 'Write content to a file. Files are saved to the storage folder automatically. '
+            . 'Just provide a filename (e.g. "report.md") or a relative path (e.g. "reports/summary.md"). '
+            . 'The full storage path will be returned so the user can access the file.';
     }
 
     public function getInputSchema(): array
@@ -27,7 +39,8 @@ class WriteFileTool implements ToolInterface
             'properties' => [
                 'path' => [
                     'type' => 'string',
-                    'description' => 'Path to the file to write',
+                    'description' => 'Filename or relative path for the file (e.g. "report.md", "output/data.csv"). '
+                        . 'Files are saved to the storage directory automatically.',
                 ],
                 'content' => [
                     'type' => 'string',
@@ -37,11 +50,6 @@ class WriteFileTool implements ToolInterface
                     'type' => 'boolean',
                     'description' => 'Append to the file instead of overwriting',
                     'default' => false,
-                ],
-                'create_dirs' => [
-                    'type' => 'boolean',
-                    'description' => 'Create parent directories if they do not exist',
-                    'default' => true,
                 ],
             ],
             'required' => ['path', 'content'],
@@ -53,34 +61,88 @@ class WriteFileTool implements ToolInterface
         $path = (string) ($input['path'] ?? '');
         $content = (string) ($input['content'] ?? '');
         $append = (bool) ($input['append'] ?? false);
-        $createDirs = (bool) ($input['create_dirs'] ?? true);
 
         if ($path === '') {
             return ToolResult::error('Path is required.');
         }
 
-        $dir = dirname($path);
+        // Resolve the path to the storage directory
+        $resolvedPath = $this->resolveStoragePath($path);
+
+        // Ensure parent directories exist
+        $dir = dirname($resolvedPath);
         if (!is_dir($dir)) {
-            if (!$createDirs) {
-                return ToolResult::error("Directory does not exist: {$dir}");
-            }
             if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
                 return ToolResult::error("Failed to create directory: {$dir}");
             }
         }
 
         $flags = $append ? FILE_APPEND : 0;
-        $result = file_put_contents($path, $content, $flags);
+        $result = file_put_contents($resolvedPath, $content, $flags);
 
         if ($result === false) {
-            return ToolResult::error("Failed to write file: {$path}");
+            return ToolResult::error("Failed to write file: {$resolvedPath}");
+        }
+
+        // Track created files
+        if (!in_array($resolvedPath, $this->createdFiles, true)) {
+            $this->createdFiles[] = $resolvedPath;
         }
 
         return ToolResult::success(json_encode([
-            'path' => $path,
+            'path' => $resolvedPath,
             'bytes_written' => $result,
             'append' => $append,
+            'storage_location' => $resolvedPath,
         ]));
+    }
+
+    /**
+     * Resolve a user-provided path to the storage directory.
+     *
+     * Extracts the filename (or last path components) and places them
+     * under the configured storage path. If no storage path is set,
+     * returns the original path unchanged.
+     */
+    private function resolveStoragePath(string $path): string
+    {
+        if ($this->storagePath === '') {
+            return $path;
+        }
+
+        // If it's already inside the storage path, leave it as-is
+        if (str_starts_with($path, $this->storagePath)) {
+            return $path;
+        }
+
+        // Extract the meaningful part of the path
+        // For absolute paths: take the basename
+        // For relative paths: keep the relative structure
+        if (str_starts_with($path, '/')) {
+            $relativePart = basename($path);
+        } else {
+            $relativePart = ltrim($path, './');
+        }
+
+        return rtrim($this->storagePath, '/') . '/' . $relativePart;
+    }
+
+    /**
+     * Get all file paths created during this session.
+     *
+     * @return array<string>
+     */
+    public function getCreatedFiles(): array
+    {
+        return $this->createdFiles;
+    }
+
+    /**
+     * Reset the created files tracker (e.g. between runs).
+     */
+    public function resetCreatedFiles(): void
+    {
+        $this->createdFiles = [];
     }
 
     public function toDefinition(): array

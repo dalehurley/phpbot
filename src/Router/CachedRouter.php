@@ -42,26 +42,44 @@ class CachedRouter
     {
         $normalized = strtolower(trim($input));
 
+        // Extract just the user request when attached file context is present.
+        // The full input may include thousands of lines of file content that
+        // would cause false positives in Tier 0/1 pattern matching (e.g. the
+        // word "memory" in an attached doc triggering the `vm_stat` shortcut).
+        $userRequest = $this->extractUserRequest($normalized);
+        $hasFileContext = ($userRequest !== $normalized);
+
         // Tier 0: Instant answer (regex, 0 tokens)
-        $instant = $this->tryInstantAnswer($normalized);
-        if ($instant !== null) {
-            return $instant;
+        // Only attempt on the user request portion — file context makes
+        // the task inherently complex, never a simple instant answer.
+        if (!$hasFileContext) {
+            $instant = $this->tryInstantAnswer($userRequest);
+            if ($instant !== null) {
+                return $instant;
+            }
         }
 
         // Tier 1: Single bash command (pattern match, 0 tokens)
-        $bash = $this->tryBashCommand($normalized);
-        if ($bash !== null) {
-            return $bash;
+        // Skip when file context is attached — the user is asking the agent
+        // to work with the file content, not run a system command.
+        if (!$hasFileContext) {
+            $bash = $this->tryBashCommand($userRequest);
+            if ($bash !== null) {
+                return $bash;
+            }
         }
 
         // Tier 2: Cached category match (keyword scoring, 0 tokens)
-        $cached = $this->tryCategoryMatch($normalized);
+        // Use the user request for matching to avoid file content noise,
+        // but pass full input to higher tiers for complete context.
+        $cached = $this->tryCategoryMatch($userRequest);
         if ($cached !== null) {
             return $cached;
         }
 
         // Tier 3a: PHP native TF-IDF classifier (in-process, 0 tokens)
-        $phpResult = $this->tryPhpClassifier($normalized);
+        // Use user request for classification to avoid file content noise
+        $phpResult = $this->tryPhpClassifier($userRequest);
         if ($phpResult !== null) {
             return $phpResult;
         }
@@ -442,6 +460,56 @@ PROMPT;
         }
 
         return false;
+    }
+
+    /**
+     * Extract the user's actual request from input that may include attached file context.
+     *
+     * When the CLI attaches file content, the input is structured as:
+     *   ## Attached File Context
+     *   ... (large file content) ...
+     *   ## User Request
+     *   create a script for a podcast
+     *
+     * This method returns just the user request portion. If no file context
+     * marker is found, the full input is returned unchanged.
+     */
+    private function extractUserRequest(string $input): string
+    {
+        // Look for the "## User Request" marker that separates file context from the actual request
+        $marker = '## user request';
+        $pos = strrpos($input, $marker);
+
+        if ($pos !== false) {
+            $request = trim(substr($input, $pos + strlen($marker)));
+
+            // Only use the extracted request if it's non-empty and reasonable
+            if ($request !== '') {
+                return $request;
+            }
+        }
+
+        // Also guard against very long inputs without the marker — if the input
+        // is extremely long it likely contains pasted/attached content and Tier 0/1
+        // pattern matching would be unreliable. Return the last ~500 chars as a
+        // heuristic for the actual user request.
+        if (strlen($input) > 2000) {
+            // Try to find the last paragraph/sentence as the user's request
+            $lastNewlines = strrpos($input, "\n\n");
+            if ($lastNewlines !== false && $lastNewlines > strlen($input) * 0.8) {
+                $tail = trim(substr($input, $lastNewlines));
+                if ($tail !== '') {
+                    return $tail;
+                }
+            }
+
+            // Input is very long with no clear user request section — signal
+            // that this is complex by returning the full input (which will be
+            // too long to match any Tier 0/1 patterns anyway)
+            return $input;
+        }
+
+        return $input;
     }
 
     /**

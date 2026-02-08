@@ -28,10 +28,10 @@ use Dalehurley\Phpbot\Stats\TokenLedger;
 class SkillPromptOptimizer
 {
     /** Don't bother optimizing skills shorter than this (in chars). */
-    private const MIN_INSTRUCTION_LENGTH = 500;
+    private const MIN_INSTRUCTION_LENGTH = 1500;
 
     /** Maximum tokens for the optimized instruction. */
-    private const MAX_OPTIMIZED_TOKENS = 256;
+    private const MAX_OPTIMIZED_TOKENS = 4000;
 
     /** Optional logging callback. */
     private ?\Closure $logger = null;
@@ -126,28 +126,6 @@ class SkillPromptOptimizer
 
             return $instructions;
         }
-    }
-
-    /**
-     * Optimize instructions for multiple skills.
-     *
-     * Returns an array mapping skill names to optimized instructions.
-     * Only skills that benefit from optimization are modified.
-     *
-     * @param string $input The user's request
-     * @param SkillInterface[] $skills Matched skills
-     * @param string $complexity Task complexity
-     * @return array<string, string> Map of skill name => optimized instructions
-     */
-    public function optimizeAll(string $input, array $skills, string $complexity = 'simple'): array
-    {
-        $optimized = [];
-
-        foreach ($skills as $skill) {
-            $optimized[$skill->getName()] = $this->optimize($input, $skill, $complexity);
-        }
-
-        return $optimized;
     }
 
     /**

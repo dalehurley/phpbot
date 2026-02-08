@@ -117,11 +117,7 @@ class SkillAutoCreator
         $skillMd = SkillMarkdownBuilder::build(
             $slug,
             $generalized,
-            $input,
-            $result->getAnswer() ?? '',
             $bundledScripts,
-            $sanitizedRecipe,
-            $credentialReport
         );
 
         file_put_contents($dir . '/SKILL.md', $skillMd);

@@ -8,6 +8,9 @@ use Dalehurley\Phpbot\Stats\TokenLedger;
 
 class BotResult
 {
+    /**
+     * @param array<string> $createdFiles Paths of files created during this run
+     */
     public function __construct(
         private bool $success,
         private ?string $answer,
@@ -17,6 +20,8 @@ class BotResult
         private array $tokenUsage,
         private array $analysis,
         private ?TokenLedger $tokenLedger = null,
+        private array $rawMessages = [],
+        private array $createdFiles = [],
     ) {}
 
     public function isSuccess(): bool
@@ -64,6 +69,26 @@ class BotResult
         return $this->tokenLedger;
     }
 
+    /**
+     * Get the raw agent messages from the execution (for Layer 3 conversation context).
+     *
+     * @return array<array<string, mixed>>
+     */
+    public function getRawMessages(): array
+    {
+        return $this->rawMessages;
+    }
+
+    /**
+     * Get the list of files created during this run.
+     *
+     * @return array<string>
+     */
+    public function getCreatedFiles(): array
+    {
+        return $this->createdFiles;
+    }
+
     public function toArray(): array
     {
         $data = [
@@ -74,6 +99,7 @@ class BotResult
             'tool_calls' => $this->toolCalls,
             'token_usage' => $this->tokenUsage,
             'analysis' => $this->analysis,
+            'created_files' => $this->createdFiles,
         ];
 
         if ($this->tokenLedger !== null) {

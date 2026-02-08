@@ -89,17 +89,17 @@ PROMPT;
             $data = json_decode($response, true);
 
             if (!is_array($data) || !isset($data['relevant'])) {
-                $this->log('Apple FM skill filter returned invalid JSON, keeping all candidates');
+                $this->log('Apple FM skill filter returned invalid JSON, returning no matches (safer than keeping all candidates)');
 
-                return $skills;
+                return [];
             }
 
             $relevantNames = $data['relevant'];
 
             if (!is_array($relevantNames)) {
-                $this->log('Apple FM skill filter returned non-array relevant field, keeping all candidates');
+                $this->log('Apple FM skill filter returned non-array relevant field, returning no matches');
 
-                return $skills;
+                return [];
             }
 
             // Map names back to skill objects
@@ -122,11 +122,12 @@ PROMPT;
 
             return $filtered;
         } catch (\Throwable $e) {
-            // On any failure, fall back to returning all candidates
-            // (preserves existing behavior, avoids breaking the pipeline)
-            $this->log('Apple FM skill filter failed: ' . $e->getMessage() . ', keeping all candidates');
+            // On failure, return no matches rather than all candidates.
+            // Keeping all candidates floods the prompt with irrelevant skills
+            // and triggers expensive optimization calls for each one.
+            $this->log('Apple FM skill filter failed: ' . $e->getMessage() . ', returning no matches');
 
-            return $skills;
+            return [];
         }
     }
 

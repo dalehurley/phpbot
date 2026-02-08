@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot\CLI;
 
 use Dalehurley\Phpbot\Bot;
+use Dalehurley\Phpbot\Conversation\ConversationHistory;
+use Dalehurley\Phpbot\Conversation\ConversationLayer;
 use Dalehurley\Phpbot\Platform;
 use Dalehurley\Phpbot\Storage\KeyStore;
 
@@ -15,6 +17,7 @@ class Application
     private ?KeyStore $keyStore = null;
     private bool $verbose = false;
     private FileResolver $fileResolver;
+    private ?ConversationHistory $conversationHistory = null;
 
     public function __construct(array $config = [])
     {
@@ -201,6 +204,15 @@ HELP;
 
     private function runInteractiveMode(): int
     {
+        // Initialize conversation history for multi-turn context
+        $conversationConfig = $this->config['conversation'] ?? [];
+        $defaultLayer = ConversationLayer::tryFrom($conversationConfig['default_layer'] ?? 'summarized')
+            ?? ConversationLayer::Summarized;
+        $this->conversationHistory = new ConversationHistory($defaultLayer, $conversationConfig['max_turns'] ?? []);
+
+        // Attach conversation history to the bot
+        $this->bot->setConversationHistory($this->conversationHistory);
+
         $this->output("\n");
         $this->output("╔══════════════════════════════════════════════════════════╗\n");
         $this->output("║                    PhpBot Interactive                     ║\n");
@@ -212,6 +224,8 @@ HELP;
         $this->output("║    /pick     - Open native file picker dialog             ║\n");
         $this->output("║    /files    - List attached files                       ║\n");
         $this->output("║    /detach   - Remove an attached file                   ║\n");
+        $this->output("║    /context  - Show conversation context info            ║\n");
+        $this->output("║    /layer    - Switch context layer (basic/summarized)   ║\n");
         $this->output("║    /tools    - List available tools                      ║\n");
         $this->output("║    /skills   - List available skills                     ║\n");
         $this->output("║    /scripts  - List skill script tools                   ║\n");
@@ -226,7 +240,16 @@ HELP;
 
         while (true) {
             $fileCount = $this->fileResolver->count();
-            $promptStr = $fileCount > 0 ? "phpbot [{$fileCount} files]> " : 'phpbot> ';
+            $turnCount = $this->conversationHistory->getTurnCount();
+            $promptParts = [];
+            if ($fileCount > 0) {
+                $promptParts[] = "{$fileCount} files";
+            }
+            if ($turnCount > 0) {
+                $promptParts[] = "{$turnCount} turns";
+            }
+            $promptSuffix = !empty($promptParts) ? ' [' . implode(', ', $promptParts) . ']' : '';
+            $promptStr = "phpbot{$promptSuffix}> ";
             $input = $this->prompt($promptStr);
 
             if ($input === false || $input === null) {
@@ -276,6 +299,8 @@ HELP;
             '/files' => $this->showAttachedFiles(),
             '/detach' => $this->handleDetach($arg),
             '/attach' => $this->handleAttach($arg),
+            '/context' => $this->showConversationContext(),
+            '/layer' => $this->handleLayerSwitch($arg),
             '/tools' => $this->showTools(),
             '/skills' => $this->showSkills(),
             '/scripts' => $this->showScripts(),
@@ -299,6 +324,8 @@ HELP;
         $this->output("    /attach <path>  - Attach a file by path\n");
         $this->output("    /files          - List currently attached files\n");
         $this->output("    /detach [path]  - Remove an attached file (all if no path)\n");
+        $this->output("    /context        - Show conversation history and layer\n");
+        $this->output("    /layer <name>   - Switch context layer (basic/summarized/full)\n");
         $this->output("    /tools          - List available tools\n");
         $this->output("    /skills         - List available skills\n");
         $this->output("    /scripts        - List skill script tools\n");
@@ -455,6 +482,16 @@ HELP;
                 $this->output(str_repeat('-', 50) . "\n");
                 $this->output($result->getAnswer() . "\n");
                 $this->output(str_repeat('-', 50) . "\n");
+
+                // Show created files so the user knows where to find them
+                $createdFiles = $result->getCreatedFiles();
+                if (!empty($createdFiles)) {
+                    $this->output("\n📁 Created Files:\n");
+                    foreach ($createdFiles as $filePath) {
+                        $size = file_exists($filePath) ? $this->formatFileSize(filesize($filePath)) : 'unknown';
+                        $this->output("  → {$filePath} ({$size})\n");
+                    }
+                }
 
                 // Show stats — use token ledger when available for rich multi-provider display
                 $ledger = $result->getTokenLedger();
@@ -673,6 +710,97 @@ HELP;
     }
 
     // -------------------------------------------------------------------------
+    // Conversation context commands
+    // -------------------------------------------------------------------------
+
+    /**
+     * Show current conversation context info.
+     */
+    private function showConversationContext(): int
+    {
+        if ($this->conversationHistory === null) {
+            $this->output("\n💬 Conversation context not available (single-command mode).\n\n");
+            return 0;
+        }
+
+        $turnCount = $this->conversationHistory->getTurnCount();
+        $layer = $this->conversationHistory->getActiveLayer();
+
+        $this->output("\n💬 Conversation Context:\n");
+        $this->output(str_repeat('-', 50) . "\n");
+        $this->output("  Turns:  {$turnCount}\n");
+        $this->output("  Layer:  {$layer->label()}\n");
+
+        if ($turnCount === 0) {
+            $this->output("\n  (no conversation history yet)\n");
+        } else {
+            $this->output("\n  Recent turns:\n");
+            $turns = $this->conversationHistory->getTurns();
+            $show = array_slice($turns, -5); // Show last 5
+            $startIdx = max(0, count($turns) - 5);
+
+            foreach ($show as $i => $turn) {
+                $num = $startIdx + $i + 1;
+                $status = $turn->isSuccess() ? 'ok' : 'err';
+                $userPreview = mb_substr($turn->userInput, 0, 60);
+                if (mb_strlen($turn->userInput) > 60) {
+                    $userPreview .= '...';
+                }
+                $this->output("    #{$num} [{$status}] {$userPreview}\n");
+                if ($turn->summary !== null) {
+                    $summaryPreview = mb_substr($turn->summary, 0, 80);
+                    if (mb_strlen($turn->summary) > 80) {
+                        $summaryPreview .= '...';
+                    }
+                    $this->output("         {$summaryPreview}\n");
+                }
+            }
+        }
+
+        $this->output("\n  Tip: Use /layer <basic|summarized|full> to change context detail.\n");
+        $this->output("\n");
+        return 0;
+    }
+
+    /**
+     * Switch the active conversation context layer.
+     */
+    private function handleLayerSwitch(string $layerName): int
+    {
+        if ($this->conversationHistory === null) {
+            $this->output("\n💬 Conversation context not available (single-command mode).\n\n");
+            return 0;
+        }
+
+        $layerName = trim(strtolower($layerName));
+
+        if ($layerName === '') {
+            // Show current layer and available options
+            $current = $this->conversationHistory->getActiveLayer();
+            $this->output("\n💬 Current context layer: {$current->label()}\n");
+            $this->output("  Available layers:\n");
+            foreach (ConversationLayer::cases() as $l) {
+                $marker = $l === $current ? ' (active)' : '';
+                $this->output("    {$l->value} — {$l->label()}{$marker}\n");
+            }
+            $this->output("\n  Usage: /layer <basic|summarized|full>\n\n");
+            return 0;
+        }
+
+        $layer = ConversationLayer::tryFrom($layerName);
+
+        if ($layer === null) {
+            $this->error("  Unknown layer: '{$layerName}'. Use basic, summarized, or full.\n\n");
+            return 0;
+        }
+
+        $previous = $this->conversationHistory->getActiveLayer();
+        $this->conversationHistory->setActiveLayer($layer);
+        $this->output("💬 Context layer changed: {$previous->value} -> {$layer->value} ({$layer->label()})\n\n");
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------
     // Input preprocessing
     // -------------------------------------------------------------------------
 
@@ -881,6 +1009,26 @@ HELP;
             $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
             @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
         };
+    }
+
+    /**
+     * Format a file size in bytes to a human-readable string.
+     */
+    private function formatFileSize(int|false $bytes): string
+    {
+        if ($bytes === false || $bytes < 0) {
+            return 'unknown';
+        }
+
+        if ($bytes < 1024) {
+            return "{$bytes} B";
+        }
+
+        if ($bytes < 1048576) {
+            return round($bytes / 1024, 1) . ' KB';
+        }
+
+        return round($bytes / 1048576, 1) . ' MB';
     }
 
     private function prompt(string $prompt): string|false

@@ -11,12 +11,13 @@ use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
 use Dalehurley\Phpbot\Agent\AgentSelector;
 use Dalehurley\Phpbot\Apple\AppleFMClient;
 use Dalehurley\Phpbot\Apple\AppleFMContextCompactor;
-use Dalehurley\Phpbot\Apple\AppleFMSimpleAgent;
 use Dalehurley\Phpbot\Apple\AppleFMSkillFilter;
 use Dalehurley\Phpbot\Apple\HaikuModelClient;
-use Dalehurley\Phpbot\Apple\SkillPromptOptimizer;
 use Dalehurley\Phpbot\Apple\SmallModelClient;
 use Dalehurley\Phpbot\Apple\ToolResultSummarizer;
+use Dalehurley\Phpbot\Conversation\ConversationHistory;
+use Dalehurley\Phpbot\Conversation\ConversationSummarizer;
+use Dalehurley\Phpbot\Conversation\ConversationTurn;
 use Dalehurley\Phpbot\Prompt\TieredPromptBuilder;
 use Dalehurley\Phpbot\Router\CachedRouter;
 use Dalehurley\Phpbot\Router\ClassifierClient;
@@ -41,9 +42,9 @@ class Bot
     private ?SmallModelClient $appleFM = null;
     private ?ToolResultSummarizer $toolSummarizer = null;
     private ?AppleFMContextCompactor $contextCompactor = null;
-    private ?AppleFMSimpleAgent $simpleAgent = null;
     private ?AppleFMSkillFilter $skillFilter = null;
-    private ?SkillPromptOptimizer $skillOptimizer = null;
+    private ?ConversationHistory $conversationHistory = null;
+    private ?ConversationSummarizer $conversationSummarizer = null;
 
     /** @var callable|null External logger: fn(string $message) => void */
     private $fileLogger = null;
@@ -98,7 +99,7 @@ class Bot
 
             $answer = $routeResult->resolve();
 
-            return new BotResult(
+            $botResult = new BotResult(
                 success: true,
                 answer: $answer,
                 error: null,
@@ -108,6 +109,10 @@ class Bot
                 analysis: ['tier' => $routeResult->tier, 'routed' => true],
                 tokenLedger: $this->tokenLedger,
             );
+
+            $this->recordConversationTurn($input, $botResult);
+
+            return $botResult;
         }
 
         // =====================================================================
@@ -133,82 +138,6 @@ class Bot
         $progress('analyzing', 'Analyzing task requirements...');
         $analysis = $this->buildAnalysis($input, $routeResult, $resolvedSkills, $clientFactory);
         $progress('analyzed', 'Task analysis complete');
-
-        // =====================================================================
-        // Phase 2a: Apple FM Simple Agent — try on-device for simple tasks
-        // =====================================================================
-
-        $complexity = $analysis['complexity'] ?? 'medium';
-        $requiredTools = $analysis['potential_tools_needed'] ?? [];
-
-        if (
-            $this->simpleAgent !== null
-            && $this->simpleAgent->canHandle($requiredTools, $complexity)
-        ) {
-            // Try skill-aware on-device execution first (when a skill is matched).
-            // The skill instructions tell Apple FM exactly what command to run,
-            // making it much more accurate. Large output (e.g. 14K weather data)
-            // is summarized before formatting to fit Apple FM's context window.
-            if (!empty($resolvedSkills) && $this->skillOptimizer !== null) {
-                $topSkill = $resolvedSkills[0];
-                $optimizedInstructions = $this->skillOptimizer->optimize($input, $topSkill, $complexity);
-
-                $this->log("🍎 Attempting on-device skill execution: {$topSkill->getName()}");
-                $progress('apple_fm', "Trying on-device agent with skill: {$topSkill->getName()}...");
-
-                $onDeviceAnswer = $this->simpleAgent->executeWithSkill(
-                    $input,
-                    $optimizedInstructions,
-                    $topSkill->getName(),
-                );
-
-                if ($onDeviceAnswer !== null) {
-                    $this->log('🍎 Skill task completed on-device (zero Claude tokens)');
-                    $progress('routed', 'Resolved via Apple FM — 0 Claude tokens');
-
-                    return new BotResult(
-                        success: true,
-                        answer: $onDeviceAnswer,
-                        error: null,
-                        iterations: 0,
-                        toolCalls: [],
-                        tokenUsage: ['input' => 0, 'output' => 0, 'total' => 0],
-                        analysis: array_merge($analysis, [
-                            'tier' => 'apple_fm_skill_agent',
-                            'on_device' => true,
-                            'skill_name' => $topSkill->getName(),
-                        ]),
-                        tokenLedger: $this->tokenLedger,
-                    );
-                }
-
-                $this->log('🍎 On-device skill execution fell back to Claude');
-            } else {
-                // No skill matched — try generic on-device execution
-                $this->log('🍎 Attempting on-device execution (simple bash task)');
-                $progress('apple_fm', 'Trying on-device agent...');
-
-                $onDeviceAnswer = $this->simpleAgent->execute($input);
-
-                if ($onDeviceAnswer !== null) {
-                    $this->log('🍎 Task completed on-device (zero Claude tokens)');
-                    $progress('routed', 'Resolved via Apple FM — 0 Claude tokens');
-
-                    return new BotResult(
-                        success: true,
-                        answer: $onDeviceAnswer,
-                        error: null,
-                        iterations: 0,
-                        toolCalls: [],
-                        tokenUsage: ['input' => 0, 'output' => 0, 'total' => 0],
-                        analysis: array_merge($analysis, ['tier' => 'apple_fm_agent', 'on_device' => true]),
-                        tokenLedger: $this->tokenLedger,
-                    );
-                }
-
-                $this->log('🍎 On-device execution returned to Claude');
-            }
-        }
 
         // =====================================================================
         // Phase 2b: Full Claude agent execution
@@ -284,6 +213,11 @@ class Bot
 
         $tools = $this->toolRegistrar->selectTools($analysis, $routeResult);
 
+        // Register conversation_context tool when history has previous turns
+        if ($this->conversationHistory !== null && !$this->conversationHistory->isEmpty()) {
+            $tools[] = new Tools\ConversationContextTool($this->conversationHistory);
+        }
+
         // Build system prompt — tiered when routed, full otherwise
         $systemPrompt = $this->buildSystemPrompt($input, $routeResult, $analysis, $resolvedSkills, $agentFactory);
 
@@ -295,6 +229,9 @@ class Bot
         // Create and run the agent
         $agent = $agentFactory->create($agentType, $tools, $systemPrompt, $analysis, $progress);
         $enhancedPrompt = $agentFactory->buildEnhancedPrompt($input, $analysis, $resolvedSkills);
+
+        // Inject conversation context from previous turns into the enhanced prompt
+        $enhancedPrompt = $this->injectConversationContext($enhancedPrompt);
 
         $this->logJson('Enhanced prompt (user message)', ['prompt' => $enhancedPrompt]);
 
@@ -337,7 +274,10 @@ class Bot
             $this->syncRouterCache();
         }
 
-        return new BotResult(
+        // Collect files created during the agent run
+        $createdFiles = $this->collectCreatedFiles();
+
+        $botResult = new BotResult(
             success: $result->isSuccess(),
             answer: $result->getAnswer(),
             error: $result->getError(),
@@ -346,7 +286,17 @@ class Bot
             tokenUsage: $result->getTokenUsage(),
             analysis: $analysis,
             tokenLedger: $this->tokenLedger,
+            rawMessages: $result->getMessages(),
+            createdFiles: $createdFiles,
         );
+
+        if (!empty($createdFiles)) {
+            $this->log('📁 Files created: ' . implode(', ', $createdFiles));
+        }
+
+        $this->recordConversationTurn($input, $botResult);
+
+        return $botResult;
     }
 
     public function getToolRegistry(): PersistentToolRegistry
@@ -375,6 +325,32 @@ class Bot
     public function listSkillScripts(): array
     {
         return $this->toolRegistrar->listSkillScripts($this->config['skills_path'] ?? '');
+    }
+
+    /**
+     * Set the conversation history for multi-turn context.
+     *
+     * When set, previous turns are injected into the agent's prompt so
+     * it can handle follow-up requests. A ConversationContextTool is
+     * also registered so the agent can inspect or switch context layers.
+     */
+    public function setConversationHistory(ConversationHistory $history): void
+    {
+        $this->conversationHistory = $history;
+
+        // Create the conversation summarizer for Layer 2 if we have a small model
+        if ($this->appleFM !== null && $this->conversationSummarizer === null) {
+            $this->conversationSummarizer = new ConversationSummarizer(
+                $this->appleFM,
+                $this->tokenLedger,
+            );
+            $this->conversationSummarizer->setLogger(fn(string $msg) => $this->log("💬 {$msg}"));
+        }
+    }
+
+    public function getConversationHistory(): ?ConversationHistory
+    {
+        return $this->conversationHistory;
     }
 
     // -------------------------------------------------------------------------
@@ -410,6 +386,7 @@ class Bot
             'temperature' => 0.7,
             'timeout' => 300.0,
             'tools_storage_path' => dirname(__DIR__) . '/storage/tools',
+            'files_storage_path' => dirname(__DIR__) . '/storage/files',
             'skills_path' => dirname(__DIR__) . '/skills',
             'keys_storage_path' => dirname(__DIR__) . '/storage/keys.json',
         ];
@@ -508,20 +485,11 @@ class Bot
         );
         $this->log('🍎 Context compaction enabled');
 
-        // Create simple agent for handling bash-only tasks
-        $this->simpleAgent = new AppleFMSimpleAgent($this->appleFM, $this->tokenLedger);
-        $this->simpleAgent->setLogger(fn(string $msg) => $this->log("🍎 {$msg}"));
-        $this->log('🍎 Simple agent enabled');
-
         // Create skill relevance filter for semantic validation of keyword matches
         $this->skillFilter = new AppleFMSkillFilter($this->appleFM, $this->tokenLedger);
         $this->skillFilter->setLogger(fn(string $msg) => $this->log("🍎 {$msg}"));
         $this->log('🍎 Skill relevance filter enabled');
 
-        // Create skill prompt optimizer for condensing instructions on simple tasks
-        $this->skillOptimizer = new SkillPromptOptimizer($this->appleFM, $this->tokenLedger);
-        $this->skillOptimizer->setLogger(fn(string $msg) => $this->log("🍎 {$msg}"));
-        $this->log('🍎 Skill prompt optimizer enabled');
     }
 
     /**
@@ -632,9 +600,8 @@ class Bot
      * Build the system prompt using tiered prompts when routed,
      * or the full legacy prompt when not.
      *
-     * When the skill prompt optimizer is available and the task is simple,
-     * skill instructions are condensed to the minimum steps needed for
-     * the specific request, dramatically reducing prompt token usage.
+     * Skill instructions are included in full — Claude has ample context.
+     * Optimization/condensing is only done for Apple FM calls (Phase 2a).
      */
     private function buildSystemPrompt(
         string $input,
@@ -654,44 +621,13 @@ class Bot
             $basePrompt = $agentFactory->getSystemPrompt($analysis);
         }
 
-        // Compose with skill instructions (loaded skills get full instructions,
-        // unloaded skills are no longer listed in the prompt — they're available
-        // via search_capabilities instead)
+        // Compose with full skill instructions for the Claude agent.
+        // No optimization here — Claude has ample context window for full
+        // SKILL.md content. Optimization is only used when loading skills
+        // into Apple FM's constrained context (handled in Phase 2a).
         if (!empty($resolvedSkills)) {
-            // Optimize skill instructions for simple/medium tasks using Apple FM.
-            // This condenses full SKILL.md content into concise, task-specific steps,
-            // reducing prompt size significantly (e.g. 2K chars -> 100 chars).
-            $complexity = $analysis['complexity'] ?? 'medium';
-            if ($this->skillOptimizer !== null && $complexity !== 'complex') {
-                $optimizedInstructions = $this->skillOptimizer->optimizeAll($input, $resolvedSkills, $complexity);
-
-                // Build the skills section manually with optimized instructions
-                $sections = [$basePrompt];
-                $skillLines = ["## Active Skills\n"];
-
-                foreach ($resolvedSkills as $skill) {
-                    $name = $skill->getName();
-                    $skillLines[] = "### Skill: {$name}";
-                    $skillLines[] = "**Description:** {$skill->getDescription()}\n";
-
-                    // Use optimized instructions if available, fall back to original
-                    $instructions = $optimizedInstructions[$name] ?? $skill->getInstructions();
-                    if (!empty($instructions)) {
-                        $skillLines[] = $instructions;
-                    }
-
-                    $skillLines[] = ''; // Blank line between skills
-                }
-
-                $sections[] = implode("\n", $skillLines);
-
-                return implode("\n\n", array_filter($sections));
-            }
-
             $composer = new SkillPromptComposer();
 
-            // Only include loaded skills, NOT the full summaries index.
-            // The search_capabilities tool replaces the need for summaries in the prompt.
             return $composer->compose($basePrompt, $resolvedSkills);
         }
 
@@ -794,10 +730,116 @@ class Bot
                 $candidates = $this->skillFilter->filter($input, $candidates);
             }
 
+            // Safety cap: never pass more than 3 skills through.
+            // The matched skill(s) should be 1-2 at most; anything beyond
+            // that inflates the prompt and triggers unnecessary optimization.
+            if (count($candidates) > 3) {
+                $this->log('⚠️ Capping resolved skills from ' . count($candidates) . ' to 3');
+                $candidates = array_slice($candidates, 0, 3);
+            }
+
             return $candidates;
         } catch (\Throwable $e) {
             return [];
         }
+    }
+
+    /**
+     * Record a completed turn in the conversation history.
+     *
+     * Builds a ConversationTurn from the BotResult, generates a Layer 2
+     * summary via the small model if available, and appends to history.
+     */
+    private function recordConversationTurn(string $input, BotResult $botResult): void
+    {
+        if ($this->conversationHistory === null) {
+            return;
+        }
+
+        // Build the turn (Layer 1 + Layer 3 data)
+        $turn = new ConversationTurn(
+            userInput: $input,
+            answer: $botResult->getAnswer(),
+            error: $botResult->getError(),
+            summary: null, // Will be filled by summarizer below
+            toolCalls: $botResult->getToolCalls(),
+            fullMessages: $botResult->getRawMessages(),
+            metadata: [
+                'iterations' => $botResult->getIterations(),
+                'token_usage' => $botResult->getTokenUsage(),
+                'analysis' => $botResult->getAnalysis(),
+            ],
+            timestamp: microtime(true),
+        );
+
+        // Generate Layer 2 summary via Apple FM / Haiku
+        if ($this->conversationSummarizer !== null) {
+            try {
+                $summary = $this->conversationSummarizer->summarize($input, $botResult);
+                if ($summary !== null) {
+                    $turn = $turn->withSummary($summary);
+                    $nextTurn = $this->conversationHistory->getTurnCount() + 1;
+                    $this->log("💬 Conversation summary generated for turn #{$nextTurn}");
+                }
+            } catch (\Throwable $e) {
+                $this->log("💬 Conversation summary failed: {$e->getMessage()}");
+            }
+        }
+
+        $this->conversationHistory->addTurn($turn);
+        $this->log("💬 Conversation turn #{$this->conversationHistory->getTurnCount()} recorded");
+    }
+
+    /**
+     * Inject conversation context from previous turns into the enhanced prompt.
+     *
+     * Prepends a "## Previous Conversation" section so the agent can handle
+     * follow-up requests. Returns the prompt unchanged when there is no history.
+     */
+    private function injectConversationContext(string $enhancedPrompt): string
+    {
+        if ($this->conversationHistory === null || $this->conversationHistory->isEmpty()) {
+            return $enhancedPrompt;
+        }
+
+        $contextBlock = $this->conversationHistory->buildContextBlock();
+
+        if ($contextBlock === '') {
+            return $enhancedPrompt;
+        }
+
+        $turnCount = $this->conversationHistory->getTurnCount();
+        $layer = $this->conversationHistory->getActiveLayer();
+        $this->log("💬 Injecting conversation context ({$turnCount} turns, layer: {$layer->value})");
+
+        // Prepend context before the enhanced prompt's task section
+        return $contextBlock . "\n\n" . $enhancedPrompt;
+    }
+
+    /**
+     * Collect files created by the WriteFileTool during the current run.
+     *
+     * Queries the tool registry for the write_file tool instance and
+     * retrieves its tracked created files, then resets the tracker.
+     *
+     * @return array<string>
+     */
+    private function collectCreatedFiles(): array
+    {
+        if (!$this->toolRegistry->has('write_file')) {
+            return [];
+        }
+
+        $writeTool = $this->toolRegistry->get('write_file');
+
+        if (!$writeTool instanceof Tools\WriteFileTool) {
+            return [];
+        }
+
+        $files = $writeTool->getCreatedFiles();
+        $writeTool->resetCreatedFiles();
+
+        return $files;
     }
 
     /**

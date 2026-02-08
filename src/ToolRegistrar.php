@@ -47,9 +47,10 @@ class ToolRegistrar
 
     public function registerCoreTools(): void
     {
+        $storagePath = $this->config['files_storage_path'] ?? '';
         $this->registry->register(new BashTool($this->config));
         $this->registry->register(new ReadFileTool());
-        $this->registry->register(new WriteFileTool());
+        $this->registry->register(new WriteFileTool($storagePath));
         $this->registry->register(new EditFileTool());
         $this->registry->register(new AskUserTool());
         $this->registry->register(new GetKeysTool($this->config));
@@ -84,6 +85,10 @@ class ToolRegistrar
     private const MINIMAL_TOOL_NAMES = [
         'bash',
         'search_capabilities',
+        'get_keys',
+        'store_keys',
+        'search_computer',
+        'ask_user',
     ];
 
     /**
