@@ -1,5 +1,10 @@
 //
-// Apple Foundation Models classifier bridge for PhpBot.
+// Apple Foundation Models bridge for PhpBot.
+//
+// Supports multiple operations:
+//   - classify: Task classification with JSON output
+//   - summarize: Content summarization with instructions
+//   - generate: General-purpose text completion
 //
 // Requires: macOS 26+ (Tahoe) with Apple Intelligence enabled.
 //
@@ -9,9 +14,10 @@
 //
 // Usage:
 //   echo '{"prompt":"Classify this..."}' | bin/apple-fm-classify
+//   echo '{"prompt":"Summarize this...","instructions":"Be concise."}' | bin/apple-fm-classify
 //
-// Input (stdin):  JSON with "prompt" key
-// Output (stdout): JSON with "content" key
+// Input (stdin):  JSON with "prompt" and optional "instructions" keys
+// Output (stdout): JSON with "content", "provider", "model" keys
 //
 
 import Foundation
@@ -23,20 +29,32 @@ import FoundationModels
 // Input/Output structs
 // ----------------------------------------------------------------------------
 
-struct ClassifyRequest: Decodable {
+struct FMRequest: Decodable {
     let prompt: String
+    let instructions: String?
     let maxTokens: Int?
 
     enum CodingKeys: String, CodingKey {
         case prompt
+        case instructions
         case maxTokens = "max_tokens"
     }
 }
 
-struct ClassifyResponse: Encodable {
+struct FMResponse: Encodable {
     let content: String
     let provider: String
     let model: String
+    let inputChars: Int
+    let outputChars: Int
+
+    enum CodingKeys: String, CodingKey {
+        case content
+        case provider
+        case model
+        case inputChars = "input_chars"
+        case outputChars = "output_chars"
+    }
 }
 
 struct ErrorResponse: Encodable {
@@ -49,7 +67,7 @@ struct ErrorResponse: Encodable {
 // ----------------------------------------------------------------------------
 
 @main
-struct AppleFMClassify {
+struct AppleFMBridge {
     static func main() async {
         do {
             // Read JSON from stdin
@@ -60,20 +78,28 @@ struct AppleFMClassify {
                 return
             }
 
-            let request = try JSONDecoder().decode(ClassifyRequest.self, from: inputData)
+            let request = try JSONDecoder().decode(FMRequest.self, from: inputData)
 
-            // Create a session with the on-device model
-            let session = LanguageModelSession()
+            // Create a session with optional instructions for better quality
+            let session: LanguageModelSession
 
-            // Send the classification prompt
+            if let instructions = request.instructions, !instructions.isEmpty {
+                session = LanguageModelSession(instructions: instructions)
+            } else {
+                session = LanguageModelSession()
+            }
+
+            // Send the prompt and get the response
             let response = try await session.respond(to: request.prompt)
             let content = response.content
 
             // Output the result as JSON
-            let result = ClassifyResponse(
+            let result = FMResponse(
                 content: content,
                 provider: "apple_fm",
-                model: "apple-on-device"
+                model: "apple-on-device",
+                inputChars: request.prompt.count + (request.instructions?.count ?? 0),
+                outputChars: content.count
             )
             let encoder = JSONEncoder()
             let outputData = try encoder.encode(result)
@@ -99,7 +125,7 @@ struct AppleFMClassify {
 
 // Fallback for systems without FoundationModels framework
 @main
-struct AppleFMClassify {
+struct AppleFMBridge {
     static func main() {
         let msg = "{\"error\":\"FoundationModels framework not available. Requires macOS 26+.\",\"provider\":\"apple_fm\"}"
         FileHandle.standardError.write(msg.data(using: .utf8)!)

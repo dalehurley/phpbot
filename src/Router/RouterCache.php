@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot\Router;
 
 use ClaudeAgents\Skills\SkillManager;
+use Dalehurley\Phpbot\Platform;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
 
 /**
@@ -311,10 +312,10 @@ class RouterCache
             'hostname|computer name|machine name' => 'hostname',
             'disk space|disk usage|storage space|how much space' => 'df -h',
             'my ip|ip address|what is my ip|public ip' => 'curl -s ifconfig.me',
-            'memory|ram usage|free memory' => 'vm_stat | head -5',
-            'cpu|processor|cpu info' => 'sysctl -n machdep.cpu.brand_string',
+            'memory|ram usage|free memory' => Platform::memoryCommand(),
+            'cpu|processor|cpu info' => Platform::cpuInfoCommand(),
             'pwd|current directory|where am i' => 'pwd',
-            'os version|macos version|system version' => 'sw_vers',
+            'os version|macos version|system version|linux version' => Platform::osVersionCommand(),
         ];
     }
 

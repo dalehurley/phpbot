@@ -1,46 +1,37 @@
 {
-    "name": "dalehurley/phpbot",
-    "description": "PHP Bot for automating your life - An evolving AI assistant powered by Claude",
-    "type": "project",
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../claude-php-agent",
-            "options": {
-                "symlink": true
-            }
-        }
-    ],
-    "require": {
-        "php": "^8.2",
-        "ext-readline": "*",
-        "cboden/ratchet": "^0.4.4",
-        "claude-php/agent": "@dev",
-        "claude-php/claude-php-sdk": "^0.5.3",
-        "phpoffice/phpword": "^1.0",
-        "react/datagram": "^1.2"
-    },
-    "license": "MIT",
-    "autoload": {
-        "psr-4": {
-            "Dalehurley\\Phpbot\\": "src/"
-        }
-    },
-    "bin": [
-        "bin/phpbot"
-    ],
-    "authors": [
-        {
-            "name": "Dale Hurley",
-            "email": "dale.hurley@createmy.com.au"
-        }
-    ],
-    "scripts": {
-        "phpbot": "php bin/phpbot",
-        "web": "bin/run-web.sh"
-    },
-    "config": {
-        "sort-packages": true,
-        "process-timeout": 0
+  "name": "dalehurley/phpbot",
+  "description": "PHP Bot for automating your life - An evolving AI assistant powered by Claude",
+  "type": "project",
+  "require": {
+    "php": "^8.2",
+    "ext-readline": "*",
+    "cboden/ratchet": "^0.4.4",
+    "claude-php/agent": "^1.4",
+    "claude-php/claude-php-sdk": "^0.5.3",
+    "phpoffice/phpword": "^1.0",
+    "react/datagram": "^1.2"
+  },
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "Dalehurley\\Phpbot\\": "src/"
     }
+  },
+  "bin": [
+    "bin/phpbot"
+  ],
+  "authors": [
+    {
+      "name": "Dale Hurley",
+      "email": "dale.hurley@createmy.com.au"
+    }
+  ],
+  "scripts": {
+    "phpbot": "php bin/phpbot",
+    "web": "bin/run-web.sh"
+  },
+  "config": {
+    "sort-packages": true,
+    "process-timeout": 0
+  }
 }

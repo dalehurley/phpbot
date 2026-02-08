@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot\Router;
 
 use ClaudeAgents\Agent;
+use Dalehurley\Phpbot\Apple\SmallModelClient;
+use Dalehurley\Phpbot\Stats\TokenLedger;
 
 /**
  * Provider-agnostic LLM client for classification.
@@ -36,6 +38,12 @@ class ClassifierClient
     /** Optional logging callback: fn(string $message): void */
     private ?\Closure $logger = null;
 
+    /** Optional small model client (Apple FM or Haiku fallback). */
+    private ?SmallModelClient $appleFM = null;
+
+    /** Optional token ledger for recording usage. */
+    private ?TokenLedger $ledger = null;
+
     /**
      * @param array $config The 'classifier' config array from phpbot.php
      * @param string $providerOverride The 'classifier_provider' value ('auto' or explicit)
@@ -48,6 +56,22 @@ class ClassifierClient
         private \Closure $clientFactory,
         private string $fastModel,
     ) {}
+
+    /**
+     * Set a small model client (Apple FM or Haiku) to delegate calls to.
+     */
+    public function setAppleFMClient(?SmallModelClient $appleFM): void
+    {
+        $this->appleFM = $appleFM;
+    }
+
+    /**
+     * Set a token ledger for recording usage.
+     */
+    public function setTokenLedger(?TokenLedger $ledger): void
+    {
+        $this->ledger = $ledger;
+    }
 
     /**
      * Set an optional logger for provider selection messages.
@@ -310,54 +334,17 @@ class ClassifierClient
     }
 
     /**
-     * Apple Foundation Models: call the compiled Swift CLI bridge.
+     * Apple Foundation Models: delegate to the shared AppleFMClient.
      *
-     * The bridge is a Swift script that uses the on-device Apple Intelligence
-     * model via the FoundationModels framework (macOS 26+).
+     * Uses the general-purpose AppleFMClient for on-device classification.
      */
     private function callAppleFM(string $prompt, int $maxTokens): string
     {
-        $binary = $this->resolveAppleFMBinary();
-
-        if ($binary === null) {
-            throw new \RuntimeException('Apple FM binary not available');
+        if ($this->appleFM === null) {
+            throw new \RuntimeException('Apple FM client not configured');
         }
 
-        $input = json_encode([
-            'prompt' => "You are a task classifier. Respond with only valid JSON.\n\n{$prompt}",
-            'max_tokens' => $maxTokens,
-        ]);
-
-        $descriptors = [
-            0 => ['pipe', 'r'],  // stdin
-            1 => ['pipe', 'w'],  // stdout
-            2 => ['pipe', 'w'],  // stderr
-        ];
-
-        $process = proc_open($binary, $descriptors, $pipes);
-
-        if (!is_resource($process)) {
-            throw new \RuntimeException('Failed to start Apple FM process');
-        }
-
-        fwrite($pipes[0], $input);
-        fclose($pipes[0]);
-
-        $stdout = stream_get_contents($pipes[1]);
-        fclose($pipes[1]);
-
-        $stderr = stream_get_contents($pipes[2]);
-        fclose($pipes[2]);
-
-        $exitCode = proc_close($process);
-
-        if ($exitCode !== 0) {
-            throw new \RuntimeException('Apple FM returned error: ' . ($stderr ?: 'unknown'));
-        }
-
-        $data = json_decode($stdout, true);
-
-        return $data['content'] ?? '';
+        return $this->appleFM->classify($prompt, $maxTokens);
     }
 
     /**
@@ -397,6 +384,15 @@ class ClassifierClient
 
         $result = $agent->run($prompt);
 
+        // Record Anthropic classification usage in ledger
+        $tokens = $result->getTokenUsage();
+        $this->ledger?->record(
+            'anthropic',
+            'classification',
+            $tokens['input'] ?? 0,
+            $tokens['output'] ?? 0,
+        );
+
         return $result->getAnswer();
     }
 
@@ -405,70 +401,17 @@ class ClassifierClient
     // -------------------------------------------------------------------------
 
     /**
-     * Check if Apple Foundation Models are available.
+     * Check if the small model client (Apple FM or Haiku fallback) is available.
      *
-     * Requires macOS 26+ (Darwin 25+) and either:
-     * - A compiled binary at bin/apple-fm-classify, or
-     * - The Swift source + swiftc compiler to compile on first use
+     * Delegates to the shared SmallModelClient when configured.
      */
     private function isAppleFMAvailable(): bool
     {
-        // Check macOS version (Darwin 25.x = macOS 26 Tahoe)
-        if (PHP_OS_FAMILY !== 'Darwin') {
-            return false;
+        if ($this->appleFM !== null) {
+            return $this->appleFM->isAvailable();
         }
 
-        $darwinVersion = php_uname('r');
-        $majorVersion = (int) explode('.', $darwinVersion)[0];
-
-        if ($majorVersion < 25) {
-            return false;
-        }
-
-        return $this->resolveAppleFMBinary() !== null;
-    }
-
-    /**
-     * Resolve the Apple FM binary path, compiling from source if needed.
-     */
-    private function resolveAppleFMBinary(): ?string
-    {
-        $binDir = $this->config['bin_path'] ?? (dirname(__DIR__, 2) . '/bin');
-        $binary = $binDir . '/apple-fm-classify';
-        $source = $binary . '.swift';
-
-        // Use pre-compiled binary
-        if (is_file($binary) && is_executable($binary)) {
-            return $binary;
-        }
-
-        // Try to compile from source
-        if (!is_file($source)) {
-            return null;
-        }
-
-        // Check if swiftc is available
-        $swiftc = trim((string) shell_exec('which swiftc 2>/dev/null'));
-
-        if ($swiftc === '') {
-            return null;
-        }
-
-        // Compile with -parse-as-library to support @main entry point
-        $cmd = escapeshellarg($swiftc)
-            . ' -parse-as-library -framework FoundationModels -O'
-            . ' -o ' . escapeshellarg($binary)
-            . ' ' . escapeshellarg($source)
-            . ' 2>&1';
-
-        $output = shell_exec($cmd);
-        $this->log('Apple FM compile: ' . ($output ?: 'OK'));
-
-        if (is_file($binary) && is_executable($binary)) {
-            return $binary;
-        }
-
-        return null;
+        return false;
     }
 
     // -------------------------------------------------------------------------

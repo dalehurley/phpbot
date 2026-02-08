@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Dalehurley\Phpbot;
 
+use Dalehurley\Phpbot\Stats\TokenLedger;
+
 class BotResult
 {
     public function __construct(
@@ -13,7 +15,8 @@ class BotResult
         private int $iterations,
         private array $toolCalls,
         private array $tokenUsage,
-        private array $analysis
+        private array $analysis,
+        private ?TokenLedger $tokenLedger = null,
     ) {}
 
     public function isSuccess(): bool
@@ -51,9 +54,19 @@ class BotResult
         return $this->analysis;
     }
 
+    /**
+     * Get the comprehensive token ledger (multi-provider tracking).
+     *
+     * Returns null if no ledger was provided (e.g. legacy callers).
+     */
+    public function getTokenLedger(): ?TokenLedger
+    {
+        return $this->tokenLedger;
+    }
+
     public function toArray(): array
     {
-        return [
+        $data = [
             'success' => $this->success,
             'answer' => $this->answer,
             'error' => $this->error,
@@ -62,6 +75,12 @@ class BotResult
             'token_usage' => $this->tokenUsage,
             'analysis' => $this->analysis,
         ];
+
+        if ($this->tokenLedger !== null) {
+            $data['token_ledger'] = $this->tokenLedger->toArray();
+        }
+
+        return $data;
     }
 
     public function toJson(): string

@@ -7,6 +7,7 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\Platform;
 
 /**
  * Searches the local computer for API keys, credentials, and configuration
@@ -30,9 +31,12 @@ class SearchComputerTool implements ToolInterface
 
     public function getDescription(): string
     {
+        $sources = Platform::credentialSourcesText();
+
         return 'Search the local computer for API keys, credentials, tokens, and config values. '
-            . 'Searches environment variables, shell profiles (.zshrc, .bashrc, .bash_profile), '
-            . '.env files in common project directories, config files, and macOS Keychain. '
+            . "Searches {$sources}, "
+            . 'shell profiles (.zshrc, .bashrc, .bash_profile), '
+            . 'and .env files in common project directories. '
             . 'Use this AFTER get_keys returns missing keys and BEFORE ask_user — the key might already exist on the machine. '
             . 'Example search_terms: ["OPENAI_API_KEY", "openai"], ["TWILIO", "twilio_account_sid"].';
     }
@@ -130,13 +134,19 @@ class SearchComputerTool implements ToolInterface
             $searchedLocations[] = 'config files';
         }
 
-        // 5. Search macOS Keychain (if on macOS)
-        if (PHP_OS_FAMILY === 'Darwin') {
+        // 5. Search OS credential store (macOS Keychain or Linux secret-tool)
+        if (Platform::isMacOS()) {
             $keychainResults = $this->searchKeychain($searchTerms);
             if (!empty($keychainResults)) {
                 $results['macos_keychain'] = $keychainResults;
             }
             $searchedLocations[] = 'macOS Keychain';
+        } elseif (Platform::hasLinuxSecretStorage()) {
+            $secretResults = $this->searchLinuxSecrets($searchTerms);
+            if (!empty($secretResults)) {
+                $results['linux_secret_storage'] = $secretResults;
+            }
+            $searchedLocations[] = 'Linux secret storage (secret-tool)';
         }
 
         // Build a flat summary of found key=value pairs for easy consumption
@@ -399,6 +409,46 @@ class SearchComputerTool implements ToolInterface
         return $matches;
     }
 
+    /**
+     * Search Linux secret storage via secret-tool (libsecret / GNOME Keyring).
+     */
+    private function searchLinuxSecrets(array $searchTerms): array
+    {
+        $matches = [];
+
+        foreach ($searchTerms as $term) {
+            // secret-tool lookup requires attribute/value pairs.
+            // Search by common attribute names used by applications.
+            $attributes = [
+                ['attribute', strtolower($term)],
+                ['service', strtolower($term)],
+                ['username', strtolower($term)],
+            ];
+
+            foreach ($attributes as [$attrName, $attrValue]) {
+                $command = sprintf(
+                    'secret-tool lookup %s %s 2>/dev/null',
+                    escapeshellarg($attrName),
+                    escapeshellarg($attrValue)
+                );
+                $output = @shell_exec($command);
+
+                if ($output !== null && trim($output) !== '') {
+                    $matches[] = [
+                        'source' => 'secret-tool',
+                        'key' => $term,
+                        'lookup' => "{$attrName}={$attrValue}",
+                        'value' => trim($output),
+                        'preview' => $this->maskValue(trim($output)),
+                    ];
+                    break; // Found via this term, skip other attributes
+                }
+            }
+        }
+
+        return $matches;
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -514,5 +564,4 @@ class SearchComputerTool implements ToolInterface
         }
         return $flat;
     }
-
 }

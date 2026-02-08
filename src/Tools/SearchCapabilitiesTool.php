@@ -35,8 +35,8 @@ class SearchCapabilitiesTool implements ToolInterface
     public function getDescription(): string
     {
         return 'Search available skills and tools by keyword. Returns compact matches. '
-             . 'Use before saying you cannot do something. Optionally load full skill '
-             . 'instructions or tool details for a specific item.';
+            . 'Use before saying you cannot do something. Optionally load full skill '
+            . 'instructions or tool details for a specific item.';
     }
 
     public function getInputSchema(): array

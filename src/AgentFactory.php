@@ -5,10 +5,17 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot;
 
 use ClaudeAgents\Agent;
+use ClaudeAgents\Tools\ToolResult;
 use ClaudeAgents\Progress\AgentUpdate;
+use Dalehurley\Phpbot\Apple\AppleFMContextCompactor;
+use Dalehurley\Phpbot\Apple\ToolResultSummarizer;
+use Dalehurley\Phpbot\Platform;
 
 class AgentFactory
 {
+    /** @var callable|null File logger: fn(string $message) => void */
+    private $fileLogger = null;
+
     /**
      * @param \Closure(): \ClaudePhp\ClaudePhp $clientFactory
      */
@@ -17,6 +24,14 @@ class AgentFactory
         private array $config,
         private bool $verbose = false
     ) {}
+
+    /**
+     * Set an external file logger for writing detailed execution logs to disk.
+     */
+    public function setLogger(callable $logger): void
+    {
+        $this->fileLogger = $logger;
+    }
 
     public function create(
         string $agentType,
@@ -35,6 +50,26 @@ class AgentFactory
             ->maxTokens($this->config['max_tokens'])
             ->temperature($this->config['temperature'])
             ->withTools($tools);
+
+        // Enable Apple FM-powered context compaction if available.
+        // Uses a lower virtual context limit (80K) so compaction starts
+        // early, keeping the conversation lean across iterations.
+        /** @var AppleFMContextCompactor|null $compactor */
+        $compactor = $this->config['context_compactor'] ?? null;
+
+        if ($compactor !== null) {
+            $agent->withContextManager($compactor);
+        } else {
+            // Fallback: basic context management with aggressive compaction
+            $agent->withContextManagement(
+                maxContextTokens: (int) ($this->config['max_context_tokens'] ?? 80000),
+                options: [
+                    'compact_threshold' => 0.50,
+                    'auto_compact' => true,
+                    'clear_tool_results' => true,
+                ],
+            );
+        }
 
         // Create stale-loop guard to halt execution when the agent is stuck
         $loopGuard = new StaleLoopGuard(
@@ -55,30 +90,30 @@ class AgentFactory
         $hasSkill = !empty($analysis['skill_matched'] ?? false);
         $maxIter = (int) ($this->config['max_iterations'] ?? 25);
 
+        $osName = Platform::osName();
+        $osPlayground = Platform::osPlaygroundPrompt();
+        $superpowers = Platform::superpowersPrompt();
+        $openCmd = Platform::openCommand();
+        $audioCmd = Platform::audioPlayCommand();
+        $credSources = Platform::credentialSourcesText();
+
         $prompt = <<<PROMPT
-You are PhpBot, an intelligent automation assistant with extraordinary capabilities. You have access to a full computer — a bash shell, the operating system, the internet, and the ability to write and run code in any language. This makes you capable of accomplishing virtually anything a human could do at a terminal.
+You are PhpBot, an intelligent automation assistant with extraordinary capabilities. You have access to a full computer running {$osName} — a bash shell, the operating system, the internet, and the ability to write and run code in any language. This makes you capable of accomplishing virtually anything a human could do at a terminal.
 
 ## Core Principles
 1. **Resourcefulness**: You can do almost anything. Your bash tool gives you the full power of the operating system — audio, video, networking, filesystems, GUI automation, clipboard, notifications, and more. If you're unsure how, explore and figure it out. The answer to "can I do X?" is almost always YES.
 2. **Bias Toward Action**: NEVER respond with "I can't do that" as your primary answer. Instead, think creatively about HOW to do it. Write a script, call an API, install a package, chain commands together. Get it done or get as close as possible.
 3. **Creative Problem Solving**: When a task seems impossible with your current tools, think laterally:
-   - **The OS is your playground**: macOS has `say` (TTS), `osascript` (GUI/notifications), `pbcopy` (clipboard), `open` (launch anything), `afplay` (audio), `screencapture` (screenshots), and hundreds more built-in commands. Linux has equivalents.
+{$osPlayground}
    - **Any API is reachable**: `curl` can call any REST API on the internet. Need to generate speech? Call OpenAI's TTS API. Need weather? Call a weather API. Need to translate? Call a translation API.
    - **Any language is available**: Write and execute Python, Node.js, PHP, Ruby, or shell scripts to accomplish complex tasks. Install packages with `pip`, `npm`, `brew`, or `composer` as needed.
-   - **Chain capabilities together**: Generate an image with an API → save to disk → open it. Generate speech with an API → save MP3 → play it with `afplay`. Scrape a website → process the data → write a report.
+   - **Chain capabilities together**: Generate an image with an API → save to disk → `{$openCmd}` it. Generate speech with an API → save MP3 → play it with `{$audioCmd}`. Scrape a website → process the data → write a report.
 4. **Efficiency**: Complete tasks in the minimum steps possible. Target completion within {$maxIter} iterations.
 5. **Resilience**: If a command fails, try a DIFFERENT approach immediately. Never repeat a failing command.
 
 ## Your Superpowers (via bash)
 Your bash tool is not just for running scripts — it's your interface to the entire computer. Think of it as your hands:
-- **Make sound**: `say "hello"` (macOS TTS), `afplay file.mp3` (play audio), `espeak` (Linux TTS)
-- **See the screen**: `screencapture` (macOS), access the filesystem, read any file
-- **Talk to the internet**: `curl` any API, `wget` any file, `ssh` to remote servers
-- **Control the OS**: `open` apps/URLs/files, `osascript` for AppleScript/GUI automation, `pbcopy`/`pbpaste` for clipboard, `launchctl` for services
-- **Install anything**: `brew install`, `pip install`, `npm install`, `apt-get install`
-- **Write & run code**: Create scripts in Python/Node/PHP/bash, execute them, chain them
-- **Process data**: `jq` for JSON, `xmllint` for XML, `awk`/`sed` for text, `ffmpeg` for media
-- **Discover what's available**: `which <cmd>`, `brew search <keyword>`, `man <cmd>`, `ls /usr/bin/`
+{$superpowers}
 
 When you're not sure how to accomplish something, EXPLORE: check what commands exist, search for packages, read man pages. Figure it out.
 
@@ -89,7 +124,7 @@ When you're not sure how to accomplish something, EXPLORE: check what commands e
 - **ask_user**: Prompt the user for missing information (API keys, credentials, choices). Use when you need secrets or input to proceed.
 - **get_keys**: ALWAYS check the keystore BEFORE asking for credentials. Call get_keys with the keys you need. If all_found, use them; otherwise ask_user only for the missing ones.
 - **store_keys**: AFTER receiving credentials from the user, call store_keys to save them for future runs.
-- **search_computer**: Search the local machine for API keys and credentials in env vars, shell profiles, .env files, and the macOS keychain. Use this AFTER get_keys returns missing keys and BEFORE ask_user.
+- **search_computer**: Search the local machine for API keys and credentials in {$credSources}. Use this AFTER get_keys returns missing keys and BEFORE ask_user.
 - **tool_builder**: Create reusable tools when a pattern repeats.
 
 ## File Creation Strategy
@@ -136,7 +171,7 @@ When you encounter a task you don't immediately know how to accomplish:
 ### Credential Workflow
 When a task requires API keys, tokens, or credentials:
 1. **get_keys** first — check the keystore for what you need
-2. **search_computer** second — scan env vars, shell profiles, .env files, and macOS Keychain
+2. **search_computer** second — scan {$credSources}
 3. **ask_user** last — only for credentials truly not found anywhere
 4. **store_keys** after — save any new credentials the user provides for future use
 
@@ -221,9 +256,32 @@ PROMPT;
     private function attachToolCallback(Agent $agent, callable $progress, StaleLoopGuard $loopGuard): void
     {
         $verbose = $this->verbose;
+        $fileLog = $this->fileLogger;
+        /** @var ToolResultSummarizer|null $summarizer */
+        $summarizer = $this->config['tool_result_summarizer'] ?? null;
 
-        $agent->onToolExecution(function (string $tool, array $input, $result) use ($progress, $verbose, $loopGuard) {
+        $agent->onToolExecution(function (string $tool, array $input, $result) use ($progress, $verbose, $fileLog, $loopGuard, $summarizer) {
             $progress('tool', "Using tool: {$tool}");
+
+            // Always log detailed tool execution to file
+            if ($fileLog !== null) {
+                $fileLog("─── Tool: {$tool} ───");
+                $inputJson = json_encode($input, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+                $fileLog("Input: {$inputJson}");
+
+                if (is_object($result) && method_exists($result, 'getContent')) {
+                    $content = $result->getContent();
+                    $isError = method_exists($result, 'isError') && $result->isError();
+                    $status = $isError ? 'ERROR' : 'OK';
+                    $maxLogChars = 3000;
+                    if (strlen($content) > $maxLogChars) {
+                        $truncated = substr($content, 0, $maxLogChars);
+                        $fileLog("Result ({$status}, " . strlen($content) . " chars, truncated): {$truncated}…");
+                    } else {
+                        $fileLog("Result ({$status}): {$content}");
+                    }
+                }
+            }
 
             if ($verbose) {
                 $this->log("🔧 Tool '{$tool}' executed");
@@ -243,22 +301,40 @@ PROMPT;
             // which propagates to the ReactLoop's catch block and halts the agent.
             $isError = is_object($result) && method_exists($result, 'isError') && $result->isError();
             $loopGuard->record($tool, $input, $isError);
+
+            // Summarize large tool results via Apple FM to reduce tokens
+            // sent to the main LLM. Returns a new ToolResult if summarized.
+            if ($summarizer !== null && $result instanceof ToolResult && $summarizer->shouldSummarize($tool, $result)) {
+                return $summarizer->summarize($tool, $input, $result);
+            }
+
+            return null; // no transformation
         });
     }
 
     private function attachUpdateCallback(Agent $agent, callable $progress): void
     {
         $verbose = $this->verbose;
+        $fileLog = $this->fileLogger;
         $iterationCount = 0;
         $summarizer = $this->config['iteration_summarizer'] ?? null;
 
-        $agent->onUpdate(function (AgentUpdate $update) use ($progress, $verbose, &$iterationCount, $summarizer) {
+        $agent->onUpdate(function (AgentUpdate $update) use ($progress, $verbose, $fileLog, &$iterationCount, $summarizer) {
             switch ($update->getType()) {
                 case 'agent.start':
                     $progress('agent_start', 'Agent started working...');
                     break;
                 case 'agent.completed':
                     $progress('agent_complete', 'Agent finished');
+                    if ($fileLog !== null) {
+                        $data = $update->getData();
+                        if (is_array($data)) {
+                            $tokens = $data['token_usage'] ?? $data['tokens'] ?? null;
+                            if ($tokens !== null) {
+                                $fileLog('Agent token usage: ' . json_encode($tokens));
+                            }
+                        }
+                    }
                     break;
                 case 'llm.iteration':
                     $iterationCount++;
@@ -266,6 +342,18 @@ PROMPT;
 
                     $data = $update->getData();
                     $text = is_array($data) ? trim((string) ($data['text'] ?? '')) : '';
+
+                    // Log full LLM response text to file
+                    if ($fileLog !== null && $text !== '') {
+                        $fileLog("═══ LLM Response (iteration {$iterationCount}) ═══");
+                        $maxLogChars = 5000;
+                        if (strlen($text) > $maxLogChars) {
+                            $fileLog(substr($text, 0, $maxLogChars) . '… (truncated, ' . strlen($text) . ' chars total)');
+                        } else {
+                            $fileLog($text);
+                        }
+                    }
+
                     // Throttle iteration summaries: only every 3rd iteration and when
                     // text is substantial, to reduce extra LLM calls for progress display.
                     $shouldSummarize = $text !== ''

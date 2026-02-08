@@ -4,13 +4,15 @@ declare(strict_types=1);
 
 namespace Dalehurley\Phpbot\CLI;
 
+use Dalehurley\Phpbot\Platform;
+
 /**
  * Resolves file references from user input.
  *
  * Supports:
  * - @path/to/file syntax (inline file references)
  * - Absolute paths from drag-and-drop into terminal
- * - macOS native file picker dialog
+ * - Native file picker dialog (macOS osascript, Linux zenity/kdialog)
  * - Fuzzy file search via fzf (if installed) or find fallback
  * - Glob patterns (e.g. @src/*.php)
  */
@@ -267,29 +269,37 @@ class FileResolver
     }
 
     /**
-     * Open macOS native file picker dialog.
+     * Open native file picker dialog (macOS, Linux with zenity/kdialog).
      *
-     * @return string|null Selected file path, or null if cancelled
+     * @return string|null Selected file path, or null if cancelled/unavailable
      */
     public function openFilePicker(string $prompt = 'Select a file', ?string $defaultDir = null): ?string
     {
-        if (PHP_OS_FAMILY !== 'Darwin') {
+        $backend = Platform::filePickerBackend();
+        if ($backend === null) {
             return null;
         }
 
         $dir = $defaultDir ?? $this->cwd;
-        $escapedDir = str_replace('"', '\\"', $dir);
-        $escapedPrompt = str_replace('"', '\\"', $prompt);
 
-        $script = <<<APPLESCRIPT
-        tell application "System Events"
-            activate
-            set theFile to choose file with prompt "{$escapedPrompt}" default location POSIX file "{$escapedDir}"
-            return POSIX path of theFile
-        end tell
-        APPLESCRIPT;
+        $command = match ($backend) {
+            'osascript' => $this->buildOsascriptPickerCommand($prompt, $dir, false),
+            'zenity' => sprintf(
+                'zenity --file-selection --title=%s --filename=%s 2>/dev/null',
+                escapeshellarg($prompt),
+                escapeshellarg($dir . '/')
+            ),
+            'kdialog' => sprintf(
+                'kdialog --getopenfilename %s 2>/dev/null',
+                escapeshellarg($dir)
+            ),
+            default => null,
+        };
 
-        $command = sprintf('osascript -e %s 2>/dev/null', escapeshellarg($script));
+        if ($command === null) {
+            return null;
+        }
+
         $output = @shell_exec($command);
 
         if ($output === null || trim($output) === '') {
@@ -300,41 +310,81 @@ class FileResolver
     }
 
     /**
-     * Open macOS native multi-file picker dialog.
+     * Open native multi-file picker dialog (macOS, Linux with zenity/kdialog).
      *
      * @return string[] Selected file paths
      */
     public function openMultiFilePicker(string $prompt = 'Select files', ?string $defaultDir = null): array
     {
-        if (PHP_OS_FAMILY !== 'Darwin') {
+        $backend = Platform::filePickerBackend();
+        if ($backend === null) {
             return [];
         }
 
         $dir = $defaultDir ?? $this->cwd;
-        $escapedDir = str_replace('"', '\\"', $dir);
-        $escapedPrompt = str_replace('"', '\\"', $prompt);
 
-        $script = <<<APPLESCRIPT
-        tell application "System Events"
-            activate
-            set theFiles to choose file with prompt "{$escapedPrompt}" default location POSIX file "{$escapedDir}" with multiple selections allowed
-            set pathList to {}
-            repeat with f in theFiles
-                set end of pathList to POSIX path of f
-            end repeat
-            set AppleScript's text item delimiters to "|||"
-            return pathList as text
-        end tell
-        APPLESCRIPT;
+        if ($backend === 'osascript') {
+            $command = $this->buildOsascriptPickerCommand($prompt, $dir, true);
+            $separator = '|||';
+        } elseif ($backend === 'zenity') {
+            $command = sprintf(
+                'zenity --file-selection --multiple --separator=%s --title=%s --filename=%s 2>/dev/null',
+                escapeshellarg('|||'),
+                escapeshellarg($prompt),
+                escapeshellarg($dir . '/')
+            );
+            $separator = '|||';
+        } elseif ($backend === 'kdialog') {
+            $command = sprintf(
+                'kdialog --getopenfilename %s --multiple 2>/dev/null',
+                escapeshellarg($dir)
+            );
+            $separator = "\n";
+        } else {
+            return [];
+        }
 
-        $command = sprintf('osascript -e %s 2>/dev/null', escapeshellarg($script));
         $output = @shell_exec($command);
 
         if ($output === null || trim($output) === '') {
             return [];
         }
 
-        return array_filter(array_map('trim', explode('|||', trim($output))));
+        return array_filter(array_map('trim', explode($separator, trim($output))));
+    }
+
+    /**
+     * Build an osascript command for macOS file picker.
+     */
+    private function buildOsascriptPickerCommand(string $prompt, string $dir, bool $multiple): string
+    {
+        $escapedDir = str_replace('"', '\\"', $dir);
+        $escapedPrompt = str_replace('"', '\\"', $prompt);
+
+        if ($multiple) {
+            $script = <<<APPLESCRIPT
+            tell application "System Events"
+                activate
+                set theFiles to choose file with prompt "{$escapedPrompt}" default location POSIX file "{$escapedDir}" with multiple selections allowed
+                set pathList to {}
+                repeat with f in theFiles
+                    set end of pathList to POSIX path of f
+                end repeat
+                set AppleScript's text item delimiters to "|||"
+                return pathList as text
+            end tell
+            APPLESCRIPT;
+        } else {
+            $script = <<<APPLESCRIPT
+            tell application "System Events"
+                activate
+                set theFile to choose file with prompt "{$escapedPrompt}" default location POSIX file "{$escapedDir}"
+                return POSIX path of theFile
+            end tell
+            APPLESCRIPT;
+        }
+
+        return sprintf('osascript -e %s 2>/dev/null', escapeshellarg($script));
     }
 
     /**

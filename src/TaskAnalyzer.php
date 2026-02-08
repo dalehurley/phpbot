@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot;
 
 use ClaudeAgents\Agent;
+use Dalehurley\Phpbot\Platform;
 
 class TaskAnalyzer
 {
@@ -92,8 +93,16 @@ class TaskAnalyzer
 
     private function getSystemPrompt(): string
     {
+        $osName = Platform::osName();
+        $tts = Platform::ttsCommand();
+        $audio = Platform::audioPlayCommand();
+        $notify = Platform::isMacOS() ? 'osascript' : 'notify-send';
+        $clip = Platform::isMacOS() ? 'pbcopy' : 'xclip';
+        $open = Platform::openCommand();
+        $screenshot = Platform::screenshotCommand();
+
         return <<<PROMPT
-You are a task analyzer for an AI agent that has access to a full computer via bash, can call any API with curl, can write and run code in any language, and can interact with the OS (audio, display, clipboard, network, etc.).
+You are a task analyzer for an AI agent running on {$osName} that has access to a full computer via bash, can call any API with curl, can write and run code in any language, and can interact with the OS (audio, display, clipboard, network, etc.).
 
 Analyze the user's request and output a JSON object with the following structure:
 
@@ -115,12 +124,12 @@ Analyze the user's request and output a JSON object with the following structure
 }
 
 IMPORTANT CONTEXT — THE AGENT CAN DO ALMOST ANYTHING:
-The agent runs on a real computer with bash access. It can:
-- Run ANY shell command (macOS or Linux)
+The agent runs on a real {$osName} computer with bash access. It can:
+- Run ANY shell command
 - Install packages via brew, pip, npm, apt-get
 - Call ANY API on the internet via curl (OpenAI, Twilio, Slack, weather, etc.)
 - Write and execute scripts in Python, Node.js, PHP, bash, etc.
-- Interact with the OS: play audio (say, afplay), show notifications (osascript), copy to clipboard (pbcopy), open files/URLs (open), take screenshots, and more
+- Interact with the OS: play audio (`{$tts}`, `{$audio}`), show notifications (`{$notify}`), copy to clipboard (`{$clip}`), open files/URLs (`{$open}`), take screenshots (`{$screenshot}`), and more
 - Read/write/create any file on the filesystem
 - Search for existing credentials on the machine
 
@@ -128,11 +137,11 @@ When analyzing, THINK CREATIVELY about how the agent could accomplish the task u
 
 REQUIRES_REAL_WORLD_EFFECT:
 Set to true when the task requires an outcome BEYOND just producing text. Examples:
-- Speaking/audio output (say out loud, play sound, text-to-speech) → requires bash `say`, `afplay`, or API-generated audio
+- Speaking/audio output (say out loud, play sound, text-to-speech) → requires bash `{$tts}`, `{$audio}`, or API-generated audio
 - Sending a message (SMS, email, Slack) → requires API calls
-- Opening something (URL, file, app) → requires OS commands
+- Opening something (URL, file, app) → requires `{$open}` command
 - Modifying system state (clipboard, notifications, settings) → requires OS commands
-- Creating visible artifacts (images, PDFs, files the user can see) → requires file creation + open
+- Creating visible artifacts (images, PDFs, files the user can see) → requires file creation + `{$open}`
 
 CRITICAL: "say hello out loud", "speak", "talk", "announce" = PRODUCE REAL AUDIO from speakers, not just print text.
 CRITICAL: "send an SMS", "call someone", "email" = ACTUALLY SEND IT via API, not just describe it.
@@ -141,7 +150,7 @@ CRITICAL: "show me", "open", "display" = ACTUALLY OPEN/DISPLAY IT, not just desc
 CREATIVE_APPROACHES:
 List 1-3 practical approaches the agent could use, from simplest to most sophisticated. Think outside the box.
 Examples:
-- "say hello out loud" → ["macOS built-in say command", "OpenAI TTS API to generate and play MP3"]
+- "say hello out loud" → ["built-in `{$tts}` command", "OpenAI TTS API to generate and play MP3"]
 - "what's the weather" → ["curl wttr.in for quick text forecast", "call OpenWeatherMap API for detailed data"]
 - "translate this to French" → ["use python googletrans library", "call DeepL or Google Translate API via curl"]
 - "send a message to Slack" → ["curl Slack webhook URL", "use Slack API with bot token"]

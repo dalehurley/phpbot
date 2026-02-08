@@ -262,21 +262,11 @@ class CachedRouter
 
         // Require at least one pattern word to match
         if ($bestMatch !== null && $bestScore >= 1) {
-            // Also resolve skills from SkillManager for better matching
+            // Only use skills explicitly listed in the cached category definition.
+            // Skill resolution with semantic filtering is handled by Bot::resolveSkills()
+            // — doing it here without filtering would bypass Apple FM validation and
+            // inject irrelevant skill instructions into the system prompt.
             $skills = $bestMatch['skills'] ?? [];
-            if ($this->skillManager !== null) {
-                try {
-                    $resolved = $this->skillManager->resolve($input, 0.3);
-                    foreach ($resolved as $skill) {
-                        $name = $skill->getName();
-                        if (!in_array($name, $skills, true)) {
-                            $skills[] = $name;
-                        }
-                    }
-                } catch (\Throwable) {
-                    // Ignore skill resolution errors
-                }
-            }
 
             return RouteResult::cached(
                 tools: $this->ensureMinimalTools($bestMatch['tools'] ?? []),
@@ -346,21 +336,9 @@ class CachedRouter
         $category = $result['category'];
         $confidence = $result['confidence'];
 
-        // Also resolve skills from SkillManager for better matching
+        // Only use skills from the category definition. Skill resolution with
+        // semantic filtering is handled by Bot::resolveSkills().
         $skills = $category['skills'] ?? [];
-        if ($this->skillManager !== null) {
-            try {
-                $resolved = $this->skillManager->resolve($input, 0.3);
-                foreach ($resolved as $skill) {
-                    $name = $skill->getName();
-                    if (!in_array($name, $skills, true)) {
-                        $skills[] = $name;
-                    }
-                }
-            } catch (\Throwable) {
-                // Ignore skill resolution errors
-            }
-        }
 
         return RouteResult::cached(
             tools: $this->ensureMinimalTools($category['tools'] ?? []),

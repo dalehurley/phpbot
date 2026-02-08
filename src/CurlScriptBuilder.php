@@ -150,7 +150,7 @@ class CurlScriptBuilder
 
         // Channel/room targets
         ['#("channel":\s*")([A-Z0-9]{9,12})#', 'CHANNEL_ID', 'Slack channel ID', 25],
-        ['#(channel[="\s]+)([#@]?[\w\-]+)#i', 'CHANNEL', 'Channel or room name', 25],
+        ['#(channel[="\s]+)([\#@]?[\w\-]+)#i', 'CHANNEL', 'Channel or room name', 25],
         ['#("chat_id":\s*"?)(-?\d+)#i', 'CHAT_ID', 'Telegram chat ID', 25],
 
         // URLs in request data (not the API endpoint itself)

@@ -9,7 +9,7 @@ use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
 
 /**
- * Homebrew package manager tool for macOS.
+ * Homebrew package manager tool for macOS and Linux (Linuxbrew).
  *
  * Provides install, uninstall, search, list, update, upgrade,
  * info, doctor, tap, and outdated operations.
@@ -31,11 +31,11 @@ class BrewTool implements ToolInterface
 
     public function getDescription(): string
     {
-        return 'Manage software packages on macOS using Homebrew. '
+        return 'Manage software packages using Homebrew (macOS and Linux). '
             . 'Install CLI tools (formulae) and GUI apps (casks), search for packages, '
             . 'list installed software, update/upgrade, uninstall, and diagnose issues. '
             . 'Use action "install" for CLI tools, "install_cask" for GUI apps (Chrome, Slack, VS Code, etc.). '
-            . 'Requires macOS with Homebrew installed.';
+            . 'Requires Homebrew installed (macOS or Linuxbrew).';
     }
 
     public function getInputSchema(): array
@@ -82,14 +82,7 @@ class BrewTool implements ToolInterface
 
     public function execute(array $input): ToolResultInterface
     {
-        // macOS check
-        if (PHP_OS_FAMILY !== 'Darwin') {
-            return ToolResult::error(
-                'Homebrew is only supported on macOS. Current OS: ' . PHP_OS_FAMILY
-            );
-        }
-
-        // Check Homebrew is installed
+        // Check Homebrew is installed (works on macOS and Linux via Linuxbrew)
         $brewPath = $this->findBrew();
         if ($brewPath === null) {
             return ToolResult::error(
@@ -366,7 +359,7 @@ class BrewTool implements ToolInterface
      */
     private function findBrew(): ?string
     {
-        // Common Homebrew paths (Apple Silicon and Intel)
+        // Common Homebrew paths (Apple Silicon, Intel Mac, and Linux)
         $paths = [
             '/opt/homebrew/bin/brew',    // Apple Silicon
             '/usr/local/bin/brew',       // Intel Mac
@@ -468,5 +461,4 @@ class BrewTool implements ToolInterface
             . "\n\n... [output truncated: ~{$totalLines} lines total] ...\n\n"
             . substr($output, -$half);
     }
-
 }

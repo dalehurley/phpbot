@@ -30,7 +30,7 @@ $envList = static function (string $key, array $default = []): array {
         return $decoded;
     }
 
-    return array_values(array_filter(array_map('trim', explode(',', $value)), static fn ($item) => $item !== ''));
+    return array_values(array_filter(array_map('trim', explode(',', $value)), static fn($item) => $item !== ''));
 };
 
 return [
@@ -130,6 +130,65 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Apple Foundation Models (On-Device Intelligence)
+    |--------------------------------------------------------------------------
+    | When available (macOS 26+), Apple FM provides free, private, on-device
+    | AI for classification, tool result summarization, and progress summaries.
+    |
+    | Tool result summarization intercepts large tool outputs (bash stdout,
+    | file contents, etc.) and compresses them via Apple FM before sending
+    | to Claude, dramatically reducing input tokens to the expensive LLM.
+    |
+    | Thresholds (in characters):
+    |   skip_threshold:      Results smaller than this pass through unchanged (default 500)
+    |   summarize_threshold: Results larger than this get summarized via Apple FM (default 800)
+    |   Between thresholds:  Light PHP compression (no LLM call, microsecond latency)
+    */
+    'apple_fm' => [
+        'enabled'              => (bool) $env('PHPBOT_APPLE_FM_ENABLED', true),
+        'summarize_tool_results' => (bool) $env('PHPBOT_APPLE_FM_SUMMARIZE', true),
+        'summarize_threshold'  => (int) $env('PHPBOT_APPLE_FM_SUMMARIZE_THRESHOLD', 800),
+        'skip_threshold'       => (int) $env('PHPBOT_APPLE_FM_SKIP_THRESHOLD', 500),
+        'summarize_progress'   => (bool) $env('PHPBOT_APPLE_FM_PROGRESS', true),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Token Pricing (per million tokens)
+    |--------------------------------------------------------------------------
+    | Override the default per-million-token pricing for cost tracking.
+    | Each entry is [input_cost, output_cost].
+    | Only set the providers whose pricing you want to override;
+    | unset providers keep their built-in defaults.
+    |
+    | Defaults (as of Feb 2026):
+    |   Anthropic Haiku 4.5:  $1.00 / $5.00
+    |   Anthropic Sonnet 4.5: $3.00 / $15.00
+    |   Anthropic Opus 4.5:   $5.00 / $25.00
+    |   Groq (70B Versatile):  $0.59 / $0.79
+    |   Gemini 3 Flash:       $0.50 / $3.00
+    |   Local providers:      $0.00 / $0.00
+    */
+    'pricing' => array_filter([
+        'anthropic_haiku'  => $env('PHPBOT_PRICE_ANTHROPIC_HAIKU', false)
+            ? array_map('floatval', explode(',', $env('PHPBOT_PRICE_ANTHROPIC_HAIKU')))
+            : null,
+        'anthropic_sonnet' => $env('PHPBOT_PRICE_ANTHROPIC_SONNET', false)
+            ? array_map('floatval', explode(',', $env('PHPBOT_PRICE_ANTHROPIC_SONNET')))
+            : null,
+        'anthropic_opus'   => $env('PHPBOT_PRICE_ANTHROPIC_OPUS', false)
+            ? array_map('floatval', explode(',', $env('PHPBOT_PRICE_ANTHROPIC_OPUS')))
+            : null,
+        'groq'             => $env('PHPBOT_PRICE_GROQ', false)
+            ? array_map('floatval', explode(',', $env('PHPBOT_PRICE_GROQ')))
+            : null,
+        'gemini'           => $env('PHPBOT_PRICE_GEMINI', false)
+            ? array_map('floatval', explode(',', $env('PHPBOT_PRICE_GEMINI')))
+            : null,
+    ], static fn($v) => $v !== null),
+
+    /*
+    |--------------------------------------------------------------------------
     | Stale Loop Detection
     |--------------------------------------------------------------------------
     | Controls when the agent is stopped for being stuck in a loop.
@@ -149,6 +208,17 @@ return [
     | Large outputs are truncated to first+last portions to keep context manageable.
     */
     'bash_max_output_chars' => (int) $env('PHPBOT_BASH_MAX_OUTPUT', 15000),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Logging
+    |--------------------------------------------------------------------------
+    | Enable file logging for each run (written to storage/logs/).
+    | When enabled, every CLI and web API run creates a timestamped log file
+    | with progress events, internal decisions, and results.
+    */
+    'log_enabled' => (bool) $env('PHPBOT_LOG_ENABLED', false),
+    'log_path' => $env('PHPBOT_LOG_PATH', dirname(__DIR__) . '/storage/logs'),
 
     /*
     |--------------------------------------------------------------------------

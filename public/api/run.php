@@ -67,8 +67,9 @@ if (is_file($envPath)) {
 $configPath = __DIR__ . '/../../config/phpbot.php';
 $config = file_exists($configPath) ? require $configPath : [];
 
-$logDir = __DIR__ . '/../../storage/logs';
-if (!is_dir($logDir)) {
+$logEnabled = (bool) ($config['log_enabled'] ?? true);
+$logDir = $config['log_path'] ?? __DIR__ . '/../../storage/logs';
+if ($logEnabled && !is_dir($logDir)) {
     mkdir($logDir, 0775, true);
 }
 
@@ -76,10 +77,12 @@ $clientRunId = preg_replace('/[^a-f0-9\\-]/i', '', (string) ($payload['client_ru
 $runId = $clientRunId !== '' ? $clientRunId : bin2hex(random_bytes(8));
 $logFile = $logDir . '/run-' . $runId . '.log';
 
-$log = function (string $message) use ($logFile): void {
-    $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
-    file_put_contents($logFile, $line, FILE_APPEND);
-};
+$log = $logEnabled
+    ? function (string $message) use ($logFile): void {
+        $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
+        file_put_contents($logFile, $line, FILE_APPEND);
+    }
+    : function (string $message): void {};
 
 $logJson = function (string $label, array $data) use ($log): void {
     $encoded = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);

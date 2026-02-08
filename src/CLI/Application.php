@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot\CLI;
 
 use Dalehurley\Phpbot\Bot;
+use Dalehurley\Phpbot\Platform;
 use Dalehurley\Phpbot\Storage\KeyStore;
 
 class Application
@@ -208,7 +209,7 @@ HELP;
         $this->output("║  Commands:                                               ║\n");
         $this->output("║    /help     - Show help                                 ║\n");
         $this->output("║    /file     - Search & select files to attach           ║\n");
-        $this->output("║    /pick     - Open file picker dialog (macOS)           ║\n");
+        $this->output("║    /pick     - Open native file picker dialog             ║\n");
         $this->output("║    /files    - List attached files                       ║\n");
         $this->output("║    /detach   - Remove an attached file                   ║\n");
         $this->output("║    /tools    - List available tools                      ║\n");
@@ -294,7 +295,7 @@ HELP;
         $this->output("  Special Commands:\n");
         $this->output("    /help           - Show this help\n");
         $this->output("    /file [query]   - Search & select a file to attach\n");
-        $this->output("    /pick           - Open macOS file picker dialog\n");
+        $this->output("    /pick           - Open native file picker dialog\n");
         $this->output("    /attach <path>  - Attach a file by path\n");
         $this->output("    /files          - List currently attached files\n");
         $this->output("    /detach [path]  - Remove an attached file (all if no path)\n");
@@ -405,12 +406,21 @@ HELP;
 
         $this->output("⏳ Processing your request...\n");
 
+        // Set up file logging for this run
+        $logWriter = $this->createLogWriter();
+        $logWriter('Prompt: ' . $input);
+
+        // Attach file logger to the bot so internal Bot::log() messages are captured
+        $this->bot->setLogger($logWriter);
+
         try {
             $startTime = microtime(true);
             $lastStage = '';
 
             // Progress callback to show real-time updates
-            $onProgress = function (string $stage, string $message) use (&$lastStage) {
+            $onProgress = function (string $stage, string $message) use (&$lastStage, $logWriter) {
+                $logWriter("Progress: {$stage} - {$message}");
+
                 $icon = match ($stage) {
                     'start' => '📝',
                     'analyzing' => '🔍',
@@ -446,27 +456,52 @@ HELP;
                 $this->output($result->getAnswer() . "\n");
                 $this->output(str_repeat('-', 50) . "\n");
 
-                // Show stats
+                // Show stats — use token ledger when available for rich multi-provider display
+                $ledger = $result->getTokenLedger();
                 $usage = $result->getTokenUsage();
-                $inputTokens = number_format($usage['input'] ?? 0);
-                $outputTokens = number_format($usage['output'] ?? 0);
-                $totalTokens = number_format($usage['total'] ?? 0);
-                $cost = $this->estimateCost($usage);
+                $cost = $this->estimateCostFromResult($result);
 
-                $this->output("\n📊 Stats: {$result->getIterations()} iterations, ");
-                $this->output("{$totalTokens} tokens ({$inputTokens} in / {$outputTokens} out), ");
-                $this->output("{$duration}s, ~\${$cost}\n");
+                $this->output("\n📊 Stats: {$result->getIterations()} iterations, {$duration}s, ~\${$cost}\n");
+
+                if ($ledger !== null && $ledger->hasEntries()) {
+                    $this->output($ledger->formatReport() . "\n");
+
+                    $savings = $ledger->getSavings();
+                    if ($savings['estimated_tokens_saved'] > 0 && !$this->verbose) {
+                        // Savings already shown in formatReport when verbose
+                    }
+                } else {
+                    // Fallback: single-line Anthropic-only display
+                    $inputTokens = number_format($usage['input'] ?? 0);
+                    $outputTokens = number_format($usage['output'] ?? 0);
+                    $totalTokens = number_format($usage['total'] ?? 0);
+                    $this->output("  Tokens: {$totalTokens} ({$inputTokens} in / {$outputTokens} out)\n");
+                }
 
                 // Show tool calls if any
                 $toolCalls = $result->getToolCalls();
                 if (!empty($toolCalls)) {
-                    $this->output("🔧 Tools used: " . implode(', ', array_unique(array_column($toolCalls, 'tool'))) . "\n");
+                    $toolNames = array_count_values(array_column($toolCalls, 'tool'));
+                    $toolParts = [];
+                    foreach ($toolNames as $name => $count) {
+                        $toolParts[] = $count > 1 ? "{$name} ({$count}x)" : $name;
+                    }
+                    $this->output("  Tools: " . implode(', ', $toolParts) . "\n");
                 }
+
+                // Log final result summary
+                $logWriter("Run completed. Success=true, iterations={$result->getIterations()}, duration={$duration}s, cost=\${$cost}");
+                if (!empty($toolCalls)) {
+                    $logWriter('Tools used: ' . implode(', ', array_unique(array_column($toolCalls, 'tool'))));
+                }
+                $logWriter('Answer: ' . ($result->getAnswer() ?? ''));
 
                 $this->output("\n");
                 return true;
             } else {
                 $error = $result->getError() ?? '';
+                $logWriter("Run completed. Success=false, error={$error}");
+
                 if ($retryUnauthorized && $this->isUnauthorizedError($error)) {
                     if ($this->promptAndStoreApiKey()) {
                         $this->bot = new Bot($this->config, $this->verbose);
@@ -478,6 +513,9 @@ HELP;
             }
         } catch (\Throwable $e) {
             $message = $e->getMessage();
+            $logWriter("Exception: {$message}");
+            $logWriter("Trace: {$e->getTraceAsString()}");
+
             if ($retryUnauthorized && $this->isUnauthorizedError($message)) {
                 if ($this->promptAndStoreApiKey()) {
                     $this->bot = new Bot($this->config, $this->verbose);
@@ -521,12 +559,17 @@ HELP;
     }
 
     /**
-     * Open the macOS file picker dialog.
+     * Open the native file picker dialog (macOS or Linux with zenity/kdialog).
      */
     private function handleFilePicker(): int
     {
-        if (PHP_OS_FAMILY !== 'Darwin') {
-            $this->error("  ❌ File picker is only available on macOS. Use /file or @path instead.\n\n");
+        if (!Platform::hasFilePicker()) {
+            if (Platform::isLinux()) {
+                $this->error("  ❌ File picker requires zenity or kdialog. Install with: sudo apt install zenity\n");
+                $this->error("     Or use /file or @path instead.\n\n");
+            } else {
+                $this->error("  ❌ File picker is not available on this platform. Use /file or @path instead.\n\n");
+            }
             return 0;
         }
 
@@ -765,6 +808,22 @@ HELP;
     }
 
     /**
+     * Estimate cost from a BotResult, using the token ledger when available.
+     */
+    private function estimateCostFromResult(\Dalehurley\Phpbot\BotResult $result): string
+    {
+        $ledger = $result->getTokenLedger();
+
+        if ($ledger !== null && $ledger->hasEntries()) {
+            $totals = $ledger->getOverallTotals();
+
+            return number_format($totals['cost'], 4);
+        }
+
+        return $this->estimateCost($result->getTokenUsage());
+    }
+
+    /**
      * Estimate cost based on token usage and configured model.
      *
      * Pricing per million tokens (as of 2026):
@@ -787,6 +846,41 @@ HELP;
         $total = $inputCost + $outputCost;
 
         return number_format($total, 4);
+    }
+
+    /**
+     * Create a log writer closure that appends timestamped lines to a run log file.
+     *
+     * Returns a no-op closure when logging is disabled via config.
+     * Log files are stored in storage/logs/cli-{timestamp}-{id}.log.
+     *
+     * Controlled by PHPBOT_LOG_ENABLED (default: true) and PHPBOT_LOG_PATH.
+     *
+     * @return callable fn(string $message): void
+     */
+    private function createLogWriter(): callable
+    {
+        $enabled = (bool) ($this->config['log_enabled'] ?? true);
+
+        if (!$enabled) {
+            return function (string $message): void {};
+        }
+
+        $logDir = $this->config['log_path']
+            ?? dirname(__DIR__, 2) . '/storage/logs';
+
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0775, true);
+        }
+
+        $timestamp = date('Y-m-d_H-i-s');
+        $runId = bin2hex(random_bytes(4));
+        $logFile = $logDir . '/cli-' . $timestamp . '-' . $runId . '.log';
+
+        return function (string $message) use ($logFile): void {
+            $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
+            @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
+        };
     }
 
     private function prompt(string $prompt): string|false
