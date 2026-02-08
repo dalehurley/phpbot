@@ -163,6 +163,60 @@ class Platform
     }
 
     // -------------------------------------------------------------------------
+    // Apple Services Detection
+    // -------------------------------------------------------------------------
+
+    /**
+     * Detect which Apple on-device services are available on this Mac.
+     *
+     * Returns an array of app names (e.g. ['Mail', 'Calendar', 'Reminders', ...]).
+     * Returns an empty array on non-macOS platforms.
+     *
+     * @return string[]
+     */
+    public static function availableAppleServices(): array
+    {
+        if (!self::isMacOS()) {
+            return [];
+        }
+
+        $services = [];
+        $apps = [
+            'Mail', 'Calendar', 'Reminders', 'Notes',
+            'Contacts', 'Messages', 'Music', 'Shortcuts',
+        ];
+
+        foreach ($apps as $app) {
+            if (is_dir("/System/Applications/{$app}.app")
+                || is_dir("/Applications/{$app}.app")
+                || is_dir("/System/Applications/Utilities/{$app}.app")
+            ) {
+                $services[] = $app;
+            }
+        }
+
+        // Shortcuts CLI check (available on macOS Monterey+)
+        if (!in_array('Shortcuts', $services, true) && self::commandExists('shortcuts')) {
+            $services[] = 'Shortcuts';
+        }
+
+        return $services;
+    }
+
+    /**
+     * Human-readable list of available Apple services for prompts.
+     */
+    public static function appleServicesText(): string
+    {
+        $services = self::availableAppleServices();
+        if (empty($services)) {
+            return '';
+        }
+
+        return implode(', ', $services);
+    }
+
+    // -------------------------------------------------------------------------
     // Prompt Helpers
     // -------------------------------------------------------------------------
 
@@ -181,7 +235,7 @@ class Platform
         $svcMgr = self::serviceManagerCommand();
         $pkgMgr = self::isMacOS() ? 'brew install' : 'apt/dnf/brew install';
 
-        return <<<PROMPT
+        $prompt = <<<PROMPT
 - **Make sound**: `{$tts} "hello"` (TTS), `{$audio} file.mp3` (play audio)
 - **See the screen**: `{$screenshot}`, access the filesystem, read any file
 - **Talk to the internet**: `curl` any API, `wget` any file, `ssh` to remote servers
@@ -191,6 +245,13 @@ class Platform
 - **Process data**: `jq` for JSON, `awk`/`sed` for text, `ffmpeg` for media
 - **Discover capabilities**: Use the search_capabilities tool to find available skills and tools
 PROMPT;
+
+        $appleServices = self::appleServicesText();
+        if ($appleServices !== '') {
+            $prompt .= "- **Apple services**: Use the `apple_services` tool to access {$appleServices} directly on this Mac\n";
+        }
+
+        return $prompt;
     }
 
     /**
@@ -205,7 +266,11 @@ PROMPT;
         $screenshot = self::screenshotCommand();
 
         if (self::isMacOS()) {
-            return "   - **The OS is your playground**: macOS has `say` (TTS), `osascript` (GUI/notifications), `pbcopy` (clipboard), `open` (launch anything), `afplay` (audio), `screencapture` (screenshots), and hundreds more built-in commands.";
+            $appleServices = self::appleServicesText();
+            $appleNote = $appleServices !== ''
+                ? " Plus the `apple_services` tool gives direct access to {$appleServices}."
+                : '';
+            return "   - **The OS is your playground**: macOS has `say` (TTS), `osascript` (GUI/notifications), `pbcopy` (clipboard), `open` (launch anything), `afplay` (audio), `screencapture` (screenshots), and hundreds more built-in commands.{$appleNote}";
         }
 
         return "   - **The OS is your playground**: Linux has `espeak`/`spd-say` (TTS), `notify-send` (notifications), `xclip` (clipboard), `xdg-open` (launch anything), `paplay`/`mpv` (audio), `scrot` (screenshots), and hundreds more built-in commands.";

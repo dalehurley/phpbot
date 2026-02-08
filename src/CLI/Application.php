@@ -225,14 +225,14 @@ HELP;
 
         $this->output("\n");
         $this->output("╔══════════════════════════════════════════════════════════╗\n");
-        $this->output("║                    PhpBot Interactive                     ║\n");
+        $this->output("║                    PhpBot Interactive                    ║\n");
         $this->output("║           An evolving AI assistant for PHP               ║\n");
         $this->output("╠══════════════════════════════════════════════════════════╣\n");
         $this->output("║  Commands:                                               ║\n");
         $this->output("║    /help     - Show help                                 ║\n");
         $this->output("║    /setup    - Run setup wizard (configure keys & env)   ║\n");
         $this->output("║    /file     - Search & select files to attach           ║\n");
-        $this->output("║    /pick     - Open native file picker dialog             ║\n");
+        $this->output("║    /pick     - Open native file picker dialog            ║\n");
         $this->output("║    /files    - List attached files                       ║\n");
         $this->output("║    /detach   - Remove an attached file                   ║\n");
         $this->output("║    /context  - Show conversation context info            ║\n");

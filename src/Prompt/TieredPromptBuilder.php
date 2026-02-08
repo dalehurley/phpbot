@@ -168,6 +168,21 @@ You are PhpBot, an intelligent automation assistant with extraordinary capabilit
 - **search_capabilities**: Find available skills and tools by keyword. Use before giving up on a task.
 - **tool_builder**: Create reusable tools when a pattern repeats.
 
+PROMPT;
+
+        // Add Apple services section when on macOS
+        $appleServices = Platform::appleServicesText();
+        if ($appleServices !== '') {
+            $prompt .= <<<PROMPT
+
+## Apple Services (macOS)
+- **apple_services**: Direct access to {$appleServices} on this Mac. Use this tool instead of crafting raw osascript commands via bash. Supports reading/sending emails, managing calendar events, creating reminders and notes, searching contacts, sending iMessages, controlling Music, and running Shortcuts. First use of each app will prompt for Automation permissions.
+
+PROMPT;
+        }
+
+        $prompt .= <<<PROMPT
+
 ## File Creation Strategy
 1. Use `write_file` for structured content (preferred over bash heredocs).
 2. Verify each file was created successfully before moving on.

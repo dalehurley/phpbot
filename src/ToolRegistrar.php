@@ -17,6 +17,7 @@ use Dalehurley\Phpbot\Tools\GetKeysTool;
 use Dalehurley\Phpbot\Tools\StoreKeysTool;
 use Dalehurley\Phpbot\Tools\SearchComputerTool;
 use Dalehurley\Phpbot\Tools\SearchCapabilitiesTool;
+use Dalehurley\Phpbot\Tools\AppleServicesTool;
 use Dalehurley\Phpbot\Tools\BrewTool;
 use Dalehurley\Phpbot\Tools\ToolBuilderTool;
 use Dalehurley\Phpbot\Tools\ToolPromoterTool;
@@ -64,6 +65,11 @@ class ToolRegistrar
         $this->registry->register(new StoreKeysTool($this->config));
         $this->registry->register(new SearchComputerTool());
         $this->registry->register(new BrewTool($this->config));
+
+        // Register Apple services tool on macOS only
+        if (Platform::isMacOS()) {
+            $this->registry->register(new AppleServicesTool($this->config));
+        }
 
         $this->registry->register(new ToolBuilderTool($this->registry));
         $this->registry->register(new ToolPromoterTool($this->registry));
@@ -155,6 +161,7 @@ class ToolRegistrar
         'store_keys',
         'search_computer',
         'brew',
+        'apple_services',
         'tool_builder',
         'tool_promoter',
     ];
