@@ -138,11 +138,22 @@ class CachedRouter
     {
         return match ($type) {
             'time' => $this->computeTimeAnswer($input),
-            'date' => 'Today is **' . date('l, F jS, Y') . '**.',
+            'date' => $this->computeDateAnswer(),
             'greeting' => 'Hello! I\'m PhpBot, your AI assistant. I can help with tasks like creating documents, sending emails, running commands, processing data, and much more. What would you like me to do?',
             'capabilities' => $this->buildCapabilitiesAnswer(),
             default => null,
         };
+    }
+
+    /**
+     * Compute a date answer using the configured local timezone.
+     */
+    private function computeDateAnswer(): string
+    {
+        $tz = new \DateTimeZone(date_default_timezone_get());
+        $now = new \DateTimeImmutable('now', $tz);
+
+        return 'Today is **' . $now->format('l, F jS, Y') . '**.';
     }
 
     /**

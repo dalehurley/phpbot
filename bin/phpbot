@@ -31,6 +31,12 @@ if (is_file($envPath)) {
     }
 }
 
+// Set timezone from config (default to system timezone)
+$tz = getenv('PHPBOT_TIMEZONE') ?: date_default_timezone_get();
+if ($tz) {
+    date_default_timezone_set($tz);
+}
+
 // Load configuration (must be after .env so getenv() returns correct values)
 $configPath = __DIR__ . '/../config/phpbot.php';
 $config = file_exists($configPath) ? require $configPath : [];

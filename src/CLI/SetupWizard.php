@@ -301,6 +301,12 @@ class SetupWizard
         $lines[] = 'ANTHROPIC_API_KEY=' . $this->anthropicKey;
         $lines[] = '';
 
+        // Timezone (auto-detect from system)
+        $lines[] = '# Timezone (IANA format, e.g. Australia/Sydney, America/New_York)';
+        $detectedTz = $this->resolveExistingEnvValue('PHPBOT_TIMEZONE', $this->detectSystemTimezone());
+        $lines[] = 'PHPBOT_TIMEZONE=' . $detectedTz;
+        $lines[] = '';
+
         // Models
         $lines[] = '# Models';
         $lines[] = 'PHPBOT_FAST_MODEL=' . $this->resolveExistingEnvValue('PHPBOT_FAST_MODEL', 'claude-haiku-4-5');
@@ -634,6 +640,22 @@ class SetupWizard
         }
 
         return '';
+    }
+
+    /**
+     * Detect the system timezone via /etc/localtime symlink or fall back to date_default_timezone_get().
+     */
+    private function detectSystemTimezone(): string
+    {
+        // Try reading /etc/localtime symlink (macOS / Linux)
+        if (is_link('/etc/localtime')) {
+            $target = readlink('/etc/localtime');
+            if ($target !== false && preg_match('#zoneinfo/(.+)$#', $target, $m)) {
+                return $m[1];
+            }
+        }
+
+        return date_default_timezone_get();
     }
 
     /**
