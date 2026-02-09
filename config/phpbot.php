@@ -276,6 +276,40 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Listener (Event Watcher)
+    |--------------------------------------------------------------------------
+    | Watches for new messages, emails, calendar events, and notifications
+    | then routes actionable items to the bot for automated handling.
+    |
+    | poll_interval: seconds between each poll cycle (min: 10)
+    | watchers: which sources to monitor (mail, calendar, messages, notifications)
+    | state_path: where to persist watcher watermarks between restarts
+    */
+    'listener' => [
+        'enabled' => (bool) $env('PHPBOT_LISTENER_ENABLED', true),
+        'poll_interval' => (int) $env('PHPBOT_LISTENER_POLL_INTERVAL', 30),
+        'watchers' => $envList('PHPBOT_LISTENER_WATCHERS', ['mail', 'calendar', 'messages', 'notifications']),
+        'state_path' => $env('PHPBOT_LISTENER_STATE_PATH', dirname(__DIR__) . '/storage/listener-state.json'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scheduler (Task Runner)
+    |--------------------------------------------------------------------------
+    | Runs scheduled tasks on a per-minute tick. Tasks can be one-time,
+    | recurring (cron expression), or interval-based.
+    |
+    | tick_interval: seconds between each scheduler tick (min: 30)
+    | tasks_path: where to persist scheduled tasks
+    */
+    'scheduler' => [
+        'enabled' => (bool) $env('PHPBOT_SCHEDULER_ENABLED', true),
+        'tick_interval' => (int) $env('PHPBOT_SCHEDULER_TICK_INTERVAL', 60),
+        'tasks_path' => $env('PHPBOT_SCHEDULER_TASKS_PATH', dirname(__DIR__) . '/storage/scheduler/tasks.json'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Working Directory
     |--------------------------------------------------------------------------
     | Default working directory for bash commands.

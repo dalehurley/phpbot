@@ -8,6 +8,7 @@
     "cboden/ratchet": "^0.4.4",
     "claude-php/agent": "^1.5",
     "claude-php/claude-php-sdk": "^0.5.3",
+    "dragonmantank/cron-expression": "^3.6",
     "phpoffice/phpword": "^1.0",
     "react/datagram": "^1.2"
   },

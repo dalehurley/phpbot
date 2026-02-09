@@ -7,7 +7,12 @@ namespace Dalehurley\Phpbot\CLI;
 use Dalehurley\Phpbot\Bot;
 use Dalehurley\Phpbot\Conversation\ConversationHistory;
 use Dalehurley\Phpbot\Conversation\ConversationLayer;
+use Dalehurley\Phpbot\Daemon\DaemonRunner;
 use Dalehurley\Phpbot\Platform;
+use Dalehurley\Phpbot\Scheduler\CronMatcher;
+use Dalehurley\Phpbot\Scheduler\Scheduler;
+use Dalehurley\Phpbot\Scheduler\Task;
+use Dalehurley\Phpbot\Scheduler\TaskStore;
 use Dalehurley\Phpbot\Storage\KeyStore;
 
 class Application
@@ -55,6 +60,11 @@ class Application
             $this->reloadEnvAndConfig();
         }
 
+        // Daemon mode — start combined listener + scheduler
+        if ($args['daemon']) {
+            return $this->runDaemonMode($args['verbose']);
+        }
+
         // Ensure API key is available
         if (!$this->ensureApiKey()) {
             return 1;
@@ -84,6 +94,7 @@ class Application
             'verbose' => false,
             'interactive' => false,
             'list-tools' => false,
+            'daemon' => false,
             'input' => '',
         ];
 
@@ -113,6 +124,10 @@ class Application
                 case '-l':
                 case '--list-tools':
                     $args['list-tools'] = true;
+                    break;
+                case '-d':
+                case '--daemon':
+                    $args['daemon'] = true;
                     break;
                 case '-c':
                 case '--command':
@@ -144,6 +159,7 @@ Usage:
   phpbot [options] [command]
   phpbot -c "your command here"
   phpbot -i  (interactive mode)
+  phpbot -d  (daemon mode: listener + scheduler)
 
 Options:
   -h, --help         Show this help message
@@ -151,12 +167,14 @@ Options:
   -v, --verbose      Enable verbose output
   -i, --interactive  Run in interactive mode
   -l, --list-tools   List all available tools
+  -d, --daemon       Start listener + scheduler daemon
   -c, --command      Run a single command
 
 Examples:
   phpbot "What files are in the current directory?"
   phpbot -v "Create a PHP class that validates email addresses"
   phpbot -c "Run the tests and fix any failures"
+  phpbot -d -v  (start daemon with verbose logging)
   phpbot -i
 
 Environment Variables:
@@ -240,6 +258,7 @@ HELP;
         $this->output("║    /tools    - List available tools                      ║\n");
         $this->output("║    /skills   - List available skills                     ║\n");
         $this->output("║    /scripts  - List skill script tools                   ║\n");
+        $this->output("║    /schedule - Manage scheduled tasks                    ║\n");
         $this->output("║    /clear    - Clear screen                              ║\n");
         $this->output("║    /exit     - Exit the application                      ║\n");
         $this->output("╠══════════════════════════════════════════════════════════╣\n");
@@ -316,6 +335,7 @@ HELP;
             '/tools' => $this->showTools(),
             '/skills' => $this->showSkills(),
             '/scripts' => $this->showScripts(),
+            '/schedule' => $this->handleScheduleCommand($arg),
             '/clear' => $this->clearScreen(),
             '/exit', '/quit', '/q' => -1,
             default => $this->unknownCommand($cmd),
@@ -342,6 +362,9 @@ HELP;
         $this->output("    /tools          - List available tools\n");
         $this->output("    /skills         - List available skills\n");
         $this->output("    /scripts        - List skill script tools\n");
+        $this->output("    /schedule       - Manage scheduled tasks\n");
+        $this->output("    /schedule list  - List all scheduled tasks\n");
+        $this->output("    /schedule add   - Add a new scheduled task\n");
         $this->output("    /clear          - Clear screen\n");
         $this->output("    /exit           - Exit the application\n\n");
         $this->output("  File Shortcuts:\n");
@@ -810,6 +833,295 @@ HELP;
         $previous = $this->conversationHistory->getActiveLayer();
         $this->conversationHistory->setActiveLayer($layer);
         $this->output("💬 Context layer changed: {$previous->value} -> {$layer->value} ({$layer->label()})\n\n");
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Daemon mode
+    // -------------------------------------------------------------------------
+
+    private function runDaemonMode(bool $verbose): int
+    {
+        // API key is needed for Bot, but daemon can run in limited mode without it
+        $apiKey = $this->resolveApiKey();
+        if ($apiKey !== '') {
+            $this->config['api_key'] = $apiKey;
+        }
+
+        $daemon = new DaemonRunner($this->config, $verbose);
+
+        // Set up file logging
+        $logDir = $this->config['log_path'] ?? dirname(__DIR__, 2) . '/storage/logs';
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0775, true);
+        }
+        $logFile = $logDir . '/daemon-' . date('Y-m-d') . '.log';
+        $daemon->setLogger(function (string $message) use ($logFile) {
+            @file_put_contents($logFile, $message . PHP_EOL, FILE_APPEND | LOCK_EX);
+        });
+
+        $daemon->run();
+
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Schedule commands
+    // -------------------------------------------------------------------------
+
+    /**
+     * Handle /schedule subcommands.
+     */
+    private function handleScheduleCommand(string $arg): int
+    {
+        $parts = preg_split('/\s+/', trim($arg), 2);
+        $subCmd = strtolower($parts[0] ?? 'list');
+        $subArg = $parts[1] ?? '';
+
+        return match ($subCmd) {
+            '', 'list' => $this->scheduleList(),
+            'add' => $this->scheduleAdd($subArg),
+            'remove', 'rm' => $this->scheduleRemove($subArg),
+            'pause' => $this->schedulePause($subArg),
+            'resume' => $this->scheduleResume($subArg),
+            default => $this->scheduleHelp(),
+        };
+    }
+
+    /**
+     * Get the shared task store.
+     */
+    private function getTaskStore(): TaskStore
+    {
+        $schedulerConfig = $this->config['scheduler'] ?? [];
+        $tasksPath = $schedulerConfig['tasks_path']
+            ?? dirname(__DIR__, 2) . '/storage/scheduler/tasks.json';
+
+        return new TaskStore($tasksPath);
+    }
+
+    private function scheduleList(): int
+    {
+        $store = $this->getTaskStore();
+        $tasks = $store->all();
+
+        $this->output("\n  Scheduled Tasks (" . count($tasks) . "):\n");
+        $this->output(str_repeat('-', 60) . "\n");
+
+        if (empty($tasks)) {
+            $this->output("  (no scheduled tasks)\n");
+            $this->output("  Use /schedule add to create one.\n\n");
+
+            return 0;
+        }
+
+        foreach ($tasks as $task) {
+            $statusIcon = match ($task->status) {
+                'pending' => 'O',
+                'running' => '>',
+                'completed' => '*',
+                'failed' => '!',
+                'paused' => '-',
+                default => '?',
+            };
+
+            $typeLabel = match ($task->type) {
+                'once' => 'once',
+                'recurring' => 'cron: ' . ($task->cronExpression ?? '?'),
+                'interval' => "every {$task->intervalMinutes}m",
+                default => $task->type,
+            };
+
+            $this->output("  [{$statusIcon}] {$task->name}\n");
+            $this->output("      ID: {$task->id} | Type: {$typeLabel} | Status: {$task->status}\n");
+            $this->output("      Next: {$task->nextRunAt->format('Y-m-d H:i')}");
+            if ($task->lastRunAt !== null) {
+                $this->output(" | Last: {$task->lastRunAt->format('Y-m-d H:i')}");
+            }
+            $this->output("\n      Command: " . mb_substr($task->command, 0, 80));
+            if (mb_strlen($task->command) > 80) {
+                $this->output('...');
+            }
+            $this->output("\n\n");
+        }
+
+        return 0;
+    }
+
+    private function scheduleAdd(string $arg): int
+    {
+        $this->output("\n  Add Scheduled Task\n");
+        $this->output(str_repeat('-', 40) . "\n");
+
+        // Name
+        $name = $this->prompt('  Task name: ');
+        if ($name === false || trim($name) === '') {
+            $this->output("  Cancelled.\n\n");
+
+            return 0;
+        }
+        $name = trim($name);
+
+        // Command
+        $command = $this->prompt('  Command (prompt to run): ');
+        if ($command === false || trim($command) === '') {
+            $this->output("  Cancelled.\n\n");
+
+            return 0;
+        }
+        $command = trim($command);
+
+        // Type
+        $this->output("\n  Schedule type:\n");
+        $this->output("    1) Once (run at a specific date/time)\n");
+        $this->output("    2) Recurring (cron expression)\n");
+        $this->output("    3) Interval (every N minutes)\n");
+        $typeChoice = $this->prompt('  Choice [1/2/3]: ');
+        $typeChoice = trim($typeChoice ?: '1');
+
+        $type = 'once';
+        $cronExpression = null;
+        $intervalMinutes = null;
+        $nextRunAt = new \DateTimeImmutable('+1 hour');
+
+        if ($typeChoice === '2') {
+            $type = 'recurring';
+            $this->output("\n  Common cron expressions:\n");
+            $this->output("    0 8 * * *     = Daily at 8:00 AM\n");
+            $this->output("    0 9 * * 1-5   = Weekdays at 9:00 AM\n");
+            $this->output("    0 */2 * * *   = Every 2 hours\n");
+            $this->output("    */30 * * * *  = Every 30 minutes\n");
+            $cronInput = $this->prompt('  Cron expression: ');
+            $cronExpression = trim($cronInput ?: '0 9 * * *');
+
+            $cronMatcher = new CronMatcher();
+            if (!$cronMatcher->isValid($cronExpression)) {
+                $this->error("  Invalid cron expression: {$cronExpression}\n\n");
+
+                return 0;
+            }
+
+            $next = $cronMatcher->getNextRunDate($cronExpression, new \DateTimeImmutable());
+            $nextRunAt = $next ?? new \DateTimeImmutable('+1 hour');
+            $this->output("  Schedule: {$cronMatcher->describe($cronExpression)}\n");
+            $this->output("  Next run: {$nextRunAt->format('Y-m-d H:i')}\n");
+        } elseif ($typeChoice === '3') {
+            $type = 'interval';
+            $intervalInput = $this->prompt('  Interval (minutes): ');
+            $intervalMinutes = max(1, (int) trim($intervalInput ?: '60'));
+            $nextRunAt = (new \DateTimeImmutable())->modify("+{$intervalMinutes} minutes");
+            $this->output("  Runs every {$intervalMinutes} minutes\n");
+            $this->output("  Next run: {$nextRunAt->format('Y-m-d H:i')}\n");
+        } else {
+            $dateInput = $this->prompt('  Run at (Y-m-d H:i, or relative like "+2 hours"): ');
+            $dateInput = trim($dateInput ?: '+1 hour');
+            try {
+                $nextRunAt = new \DateTimeImmutable($dateInput);
+            } catch (\Throwable) {
+                $this->error("  Invalid date: {$dateInput}\n\n");
+
+                return 0;
+            }
+            $this->output("  Scheduled for: {$nextRunAt->format('Y-m-d H:i')}\n");
+        }
+
+        $task = new Task(
+            id: bin2hex(random_bytes(8)),
+            name: $name,
+            command: $command,
+            type: $type,
+            nextRunAt: $nextRunAt,
+            cronExpression: $cronExpression,
+            intervalMinutes: $intervalMinutes,
+            metadata: ['created_by' => 'cli'],
+        );
+
+        $store = $this->getTaskStore();
+        $store->save($task);
+
+        $this->output("\n  Task '{$name}' created (ID: {$task->id})\n\n");
+
+        return 0;
+    }
+
+    private function scheduleRemove(string $id): int
+    {
+        $id = trim($id);
+        if ($id === '') {
+            $this->error("  Usage: /schedule remove <task-id>\n\n");
+
+            return 0;
+        }
+
+        $store = $this->getTaskStore();
+        if ($store->remove($id)) {
+            $this->output("  Task {$id} removed.\n\n");
+        } else {
+            $this->error("  Task {$id} not found.\n\n");
+        }
+
+        return 0;
+    }
+
+    private function schedulePause(string $id): int
+    {
+        $id = trim($id);
+        if ($id === '') {
+            $this->error("  Usage: /schedule pause <task-id>\n\n");
+
+            return 0;
+        }
+
+        $store = $this->getTaskStore();
+        $task = $store->findById($id);
+
+        if ($task === null) {
+            $this->error("  Task {$id} not found.\n\n");
+
+            return 0;
+        }
+
+        $task->status = 'paused';
+        $store->save($task);
+        $this->output("  Task '{$task->name}' paused.\n\n");
+
+        return 0;
+    }
+
+    private function scheduleResume(string $id): int
+    {
+        $id = trim($id);
+        if ($id === '') {
+            $this->error("  Usage: /schedule resume <task-id>\n\n");
+
+            return 0;
+        }
+
+        $store = $this->getTaskStore();
+        $task = $store->findById($id);
+
+        if ($task === null) {
+            $this->error("  Task {$id} not found.\n\n");
+
+            return 0;
+        }
+
+        $task->status = 'pending';
+        $store->save($task);
+        $this->output("  Task '{$task->name}' resumed.\n\n");
+
+        return 0;
+    }
+
+    private function scheduleHelp(): int
+    {
+        $this->output("\n  Schedule Commands:\n");
+        $this->output("    /schedule list           - List all tasks\n");
+        $this->output("    /schedule add            - Add a new task (interactive)\n");
+        $this->output("    /schedule remove <id>    - Remove a task\n");
+        $this->output("    /schedule pause <id>     - Pause a task\n");
+        $this->output("    /schedule resume <id>    - Resume a paused task\n\n");
+
         return 0;
     }
 

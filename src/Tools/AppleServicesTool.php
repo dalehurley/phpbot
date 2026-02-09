@@ -7,6 +7,7 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\Apple\AppleScriptRunner;
 use Dalehurley\Phpbot\Platform;
 
 /**
@@ -22,11 +23,12 @@ class AppleServicesTool implements ToolInterface
 {
     use ToolDefinitionTrait;
 
-    private int $maxOutputChars;
+    private AppleScriptRunner $runner;
 
     public function __construct(array $config = [])
     {
-        $this->maxOutputChars = (int) ($config['apple_services_max_output_chars'] ?? 15000);
+        $maxOutput = (int) ($config['apple_services_max_output_chars'] ?? 15000);
+        $this->runner = new AppleScriptRunner($maxOutput);
     }
 
     public function getName(): string
@@ -1042,58 +1044,32 @@ APPLESCRIPT;
     }
 
     // -------------------------------------------------------------------------
-    // Helpers
+    // Helpers — delegate to AppleScriptRunner
     // -------------------------------------------------------------------------
 
-    /**
-     * Execute an AppleScript via osascript.
-     *
-     * Returns the result array or null if a permission error is detected.
-     */
     private function runOsascript(string $script, int $timeout = 30): ?array
     {
-        // Write script to a temp file to avoid shell escaping issues with -e
-        $tmpFile = tempnam(sys_get_temp_dir(), 'phpbot_as_');
-        if ($tmpFile === false) {
-            return ['stdout' => '', 'stderr' => 'Failed to create temp file', 'exit_code' => 1];
-        }
-        file_put_contents($tmpFile, $script);
-
-        $command = 'osascript ' . escapeshellarg($tmpFile) . ' 2>&1';
-        $result = $this->run($command, $timeout);
-
-        @unlink($tmpFile);
-
-        // Check for permission errors
-        if ($this->isPermissionError($result)) {
-            return null;
-        }
-
-        return $result;
+        return $this->runner->runOsascript($script, $timeout);
     }
 
-    /**
-     * Detect macOS Automation permission errors in osascript output.
-     */
-    private function isPermissionError(array $result): bool
+    private function run(string $command, int $timeout = 60): array
     {
-        $output = $result['stdout'] . ' ' . $result['stderr'];
-        $patterns = [
-            'not allowed assistive access',
-            'is not allowed to send keystrokes',
-            'not authorized to send Apple events',
-            'execution error: Not authorized',
-            'CommandProcess completed with a non-zero exit code',
-            'assistive access',
-        ];
+        return $this->runner->runCommand($command, $timeout);
+    }
 
-        foreach ($patterns as $pattern) {
-            if (stripos($output, $pattern) !== false) {
-                return true;
-            }
-        }
+    private function escapeAppleScript(string $value): string
+    {
+        return $this->runner->escapeAppleScript($value);
+    }
 
-        return false;
+    private function parseTsvOutput(string $output, array $fields): array
+    {
+        return $this->runner->parseTsvOutput($output, $fields);
+    }
+
+    private function truncate(string $output): string
+    {
+        return $this->runner->truncate($output);
     }
 
     /**
@@ -1106,122 +1082,5 @@ APPLESCRIPT;
             . "System Settings > Privacy & Security > Automation > enable phpbot (or Terminal) access to {$appName}. "
             . 'After granting permission, try the action again.'
         );
-    }
-
-    /**
-     * Escape a string for safe embedding in AppleScript double-quoted strings.
-     */
-    private function escapeAppleScript(string $value): string
-    {
-        // In AppleScript, backslash and double-quote need escaping
-        $value = str_replace('\\', '\\\\', $value);
-        $value = str_replace('"', '\\"', $value);
-
-        return $value;
-    }
-
-    /**
-     * Parse tab-separated output lines into structured arrays.
-     *
-     * @param string $output Raw TSV output
-     * @param array $fields Field names for each column
-     * @return array<array<string, string>>
-     */
-    private function parseTsvOutput(string $output, array $fields): array
-    {
-        $rows = [];
-        $lines = array_filter(array_map('trim', explode("\n", $output)), fn($l) => $l !== '');
-
-        foreach ($lines as $line) {
-            $parts = explode("\t", $line);
-            $row = [];
-            foreach ($fields as $i => $field) {
-                $row[$field] = $parts[$i] ?? '';
-            }
-            $rows[] = $row;
-        }
-
-        return $rows;
-    }
-
-    /**
-     * Run a shell command and return stdout, stderr, exit_code.
-     */
-    private function run(string $command, int $timeout = 60): array
-    {
-        $descriptors = [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
-
-        $process = proc_open($command, $descriptors, $pipes, getcwd() ?: '/tmp');
-
-        if (!is_resource($process)) {
-            return ['stdout' => '', 'stderr' => 'Failed to start process', 'exit_code' => 1];
-        }
-
-        fclose($pipes[0]);
-        stream_set_blocking($pipes[1], false);
-        stream_set_blocking($pipes[2], false);
-
-        $stdout = '';
-        $stderr = '';
-        $startTime = time();
-
-        while (true) {
-            $status = proc_get_status($process);
-            $stdout .= stream_get_contents($pipes[1]);
-            $stderr .= stream_get_contents($pipes[2]);
-
-            if (!$status['running']) {
-                break;
-            }
-
-            if (time() - $startTime > $timeout) {
-                proc_terminate($process, 9);
-                fclose($pipes[1]);
-                fclose($pipes[2]);
-                proc_close($process);
-                return [
-                    'stdout' => trim($stdout),
-                    'stderr' => "Command timed out after {$timeout} seconds",
-                    'exit_code' => 124,
-                ];
-            }
-
-            usleep(10000);
-        }
-
-        $stdout .= stream_get_contents($pipes[1]);
-        $stderr .= stream_get_contents($pipes[2]);
-
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-
-        $exitCode = proc_close($process);
-
-        return [
-            'stdout' => trim($stdout),
-            'stderr' => trim($stderr),
-            'exit_code' => $status['exitcode'] ?? $exitCode,
-        ];
-    }
-
-    /**
-     * Truncate output to prevent context window explosion.
-     */
-    private function truncate(string $output): string
-    {
-        if (strlen($output) <= $this->maxOutputChars) {
-            return $output;
-        }
-
-        $half = (int) ($this->maxOutputChars / 2);
-        $totalLines = substr_count($output, "\n") + 1;
-
-        return substr($output, 0, $half)
-            . "\n\n... [output truncated: ~{$totalLines} lines total] ...\n\n"
-            . substr($output, -$half);
     }
 }
