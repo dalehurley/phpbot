@@ -10,16 +10,25 @@ use Dalehurley\Phpbot\CredentialPatterns;
  * Assembles the SKILL.md file content from the LLM-generalised skill data
  * and bundled script metadata.
  *
- * Supports multiple skill archetypes:
+ * Output follows the Anthropic skill-creator conventions:
+ *  - Frontmatter contains ONLY `name` and `description` (the two fields
+ *    the runtime reads for skill matching). No tags, version, or extras.
+ *  - The `description` carries all "when to use" and keyword information;
+ *    there is no ## When to Use or ## Keywords body section, as those are
+ *    never loaded at trigger time and waste context once loaded.
+ *  - The body focuses on executable, non-obvious guidance: credentials,
+ *    parameters, procedure, scripts, commands, examples, and notes.
+ *
+ * Supported skill archetypes:
  *  - Script-driven utilities  (clipboard, csv-tools, send-email)
  *  - Command-driven skills    (open-application, text-to-speech)
  *  - Reference/knowledge guides (pdf, brand-guidelines, internal-comms)
  *  - Creative workflow skills  (algorithmic-art, canvas-design)
  *  - Toolkit skills           (web-artifacts-builder, word-documents)
  *
- * All creative content (description, procedure, example, etc.) is produced
+ * All creative content (description, procedure, examples, etc.) is produced
  * by the LLM in SkillGeneralizer. The builder formats it as markdown with
- * the right sections for the skill's archetype.
+ * the correct sections for the skill's archetype.
  */
 class SkillMarkdownBuilder
 {
@@ -35,31 +44,38 @@ class SkillMarkdownBuilder
         array $generalized,
         array $bundledScripts = [],
     ): string {
-        $description = str_replace('"', '\\"', $generalized['description']);
-        $tags        = $generalized['tags'] ?? ['auto-generated'];
-        $tagsYaml    = self::formatTagsYaml($tags);
-        $license     = trim($generalized['license'] ?? '');
-        $version     = trim($generalized['version'] ?? '0.1.0');
-
-        $overview          = trim($generalized['overview'] ?? '');
-        $whenToUse         = $generalized['when_to_use'];
+        $description       = str_replace('"', '\\"', $generalized['description']);
         $procedure         = $generalized['procedure'];
         $requiredCreds     = $generalized['required_credentials'] ?? [];
         $setupNotes        = $generalized['setup_notes'] ?? [];
         $inputParams       = $generalized['input_parameters'] ?? [];
         $outputFormat      = trim($generalized['output_format'] ?? '');
-        $exampleRequest    = CredentialPatterns::strip(trim($generalized['example_request'] ?? ''));
         $referenceCommands = CredentialPatterns::strip(trim($generalized['reference_commands'] ?? ''));
-        $keywords          = $generalized['keywords'] ?? [];
         $notes             = $generalized['notes'] ?? [];
         $bundledResources  = $generalized['bundled_resources'] ?? [];
 
+        // Normalise examples: prefer the `examples` array, fall back to the
+        // legacy single `example_request` string for backward compatibility.
+        $examples = $generalized['examples'] ?? [];
+        if (empty($examples)) {
+            $single = CredentialPatterns::strip(trim($generalized['example_request'] ?? ''));
+            if ($single !== '') {
+                $examples = [$single];
+            }
+        } else {
+            $examples = array_values(array_filter(
+                array_map(fn($e) => CredentialPatterns::strip(trim((string) $e)), $examples),
+                fn($e) => $e !== ''
+            ));
+        }
+
+        // Human-readable title: title-case each hyphen-separated word.
+        $title = implode(' ', array_map('ucfirst', explode('-', $slug)));
+
         // --- Assemble sections in order ---
 
-        $md = self::buildFrontmatter($slug, $description, $tagsYaml, $license, $version);
-        $md .= "\n\n# Skill: {$slug}\n\n";
-        $md .= self::buildOverviewSection($overview);
-        $md .= self::buildWhenToUseSection($whenToUse);
+        $md  = self::buildFrontmatter($slug, $description);
+        $md .= "\n\n# {$title}\n\n";
         $md .= self::buildCredentialsSection($requiredCreds, $setupNotes);
         $md .= self::buildInputParametersSection($inputParams);
         $md .= self::buildProcedureSection($procedure);
@@ -67,9 +83,8 @@ class SkillMarkdownBuilder
         $md .= self::buildScriptsSection($bundledScripts);
         $md .= self::buildBundledResourcesSection($bundledResources);
         $md .= self::buildReferenceCommandsSection($referenceCommands, $bundledScripts);
-        $md .= self::buildExampleSection($exampleRequest);
+        $md .= self::buildExampleSection($examples);
         $md .= self::buildNotesSection($notes);
-        $md .= self::buildKeywordsSection($keywords);
 
         return $md;
     }
@@ -78,44 +93,14 @@ class SkillMarkdownBuilder
     // Frontmatter
     // =========================================================================
 
-    private static function buildFrontmatter(
-        string $slug,
-        string $description,
-        string $tagsYaml,
-        string $license,
-        string $version,
-    ): string {
-        $yaml = "---\n";
-        $yaml .= "name: {$slug}\n";
-        $yaml .= "description: \"{$description}\"\n";
-        $yaml .= "tags: {$tagsYaml}\n";
-        $yaml .= "version: {$version}\n";
-
-        if ($license !== '') {
-            $yaml .= "license: {$license}\n";
-        }
-
-        $yaml .= '---';
-
-        return $yaml;
-    }
-
     /**
-     * Format tags as YAML — use inline array for short lists,
-     * multi-line for longer lists or tags containing special chars.
+     * Only `name` and `description` — the two fields the runtime reads for
+     * skill matching. Additional fields (tags, version, etc.) are not parsed
+     * and only bloat the metadata that is always held in context.
      */
-    private static function formatTagsYaml(array $tags): string
+    private static function buildFrontmatter(string $slug, string $description): string
     {
-        $needsMultiLine = count($tags) > 6
-            || array_filter($tags, fn($t) => str_contains($t, ',') || str_contains($t, ':'));
-
-        if ($needsMultiLine) {
-            $lines = array_map(fn($t) => "  - {$t}", $tags);
-
-            return "\n" . implode("\n", $lines);
-        }
-
-        return '[' . implode(', ', $tags) . ']';
+        return "---\nname: {$slug}\ndescription: \"{$description}\"\n---";
     }
 
     // =========================================================================
@@ -123,40 +108,7 @@ class SkillMarkdownBuilder
     // =========================================================================
 
     /**
-     * Overview — a brief introductory paragraph providing context.
-     * Inspired by: pdf ("## Overview"), brand-guidelines, theme-factory.
-     */
-    private static function buildOverviewSection(string $overview): string
-    {
-        if ($overview === '') {
-            return '';
-        }
-
-        return "## Overview\n\n{$overview}\n\n";
-    }
-
-    /**
-     * When to Use — ensures bullet-list format for consistent discoverability.
-     * Inspired by: clipboard, csv-tools, text-to-speech, send-email.
-     */
-    private static function buildWhenToUseSection(string $whenToUse): string
-    {
-        $whenToUse = trim($whenToUse);
-
-        // If the LLM already provided markdown with bullets, use as-is.
-        // Otherwise, wrap in a clean format.
-        if (str_contains($whenToUse, '- ') || str_contains($whenToUse, '* ')) {
-            return "## When to Use\n\n{$whenToUse}\n\n";
-        }
-
-        // Legacy format: "Use this skill when the user asks to:\n..."
-        // Ensure it reads cleanly even without bullets.
-        return "## When to Use\n\n{$whenToUse}\n\n";
-    }
-
-    /**
      * Required Credentials — with optional per-service setup subsections.
-     * Inspired by: send-email ("### Gmail Setup"), text-to-speech (OpenAI escalation).
      */
     private static function buildCredentialsSection(array $requiredCreds, array $setupNotes = []): string
     {
@@ -164,7 +116,7 @@ class SkillMarkdownBuilder
             return '';
         }
 
-        $md = "## Required Credentials\n\n";
+        $md  = "## Required Credentials\n\n";
         $md .= "Retrieve these via the `get_keys` tool before executing:\n\n";
         $md .= "| Key Store Key | Environment Variable | Description |\n";
         $md .= "|---------------|---------------------|-------------|\n";
@@ -178,7 +130,6 @@ class SkillMarkdownBuilder
 
         $md .= "\n";
 
-        // Append per-service setup guidance (e.g., "Gmail Setup", "Twilio Setup")
         foreach ($setupNotes as $note) {
             $service      = $note['service'] ?? 'Service';
             $instructions = trim($note['instructions'] ?? '');
@@ -199,7 +150,7 @@ class SkillMarkdownBuilder
             return '';
         }
 
-        $md = "## Input Parameters\n\n";
+        $md  = "## Input Parameters\n\n";
         $md .= "| Parameter | Required | Description | Example |\n";
         $md .= "|-----------|----------|-------------|---------|\n";
 
@@ -215,8 +166,7 @@ class SkillMarkdownBuilder
     }
 
     /**
-     * Procedure — numbered steps. Ensures proper markdown formatting.
-     * Inline code references in steps are preserved.
+     * Procedure — numbered steps with concrete commands.
      */
     private static function buildProcedureSection(string $procedure): string
     {
@@ -229,9 +179,7 @@ class SkillMarkdownBuilder
     }
 
     /**
-     * Output — what the skill produces/delivers.
-     * Inspired by: algorithmic-art ("### OUTPUT FORMAT"), canvas-design output files,
-     * financial-analysis ("## Last Result"), create-educational-podcast deliverables.
+     * Output — what the skill produces/delivers. Omitted when empty or obvious.
      */
     private static function buildOutputSection(string $outputFormat): string
     {
@@ -251,7 +199,7 @@ class SkillMarkdownBuilder
             return '';
         }
 
-        $md = "## Bundled Scripts\n\n";
+        $md  = "## Bundled Scripts\n\n";
         $md .= "| Script | Type | Description |\n";
         $md .= "|--------|------|-------------|\n";
 
@@ -263,7 +211,6 @@ class SkillMarkdownBuilder
 
         $md .= "\n";
 
-        // Show usage for auto-generated scripts
         $autoScripts = array_filter($bundledScripts, fn($s) => ($s['source'] ?? '') === 'auto_generated');
         if (!empty($autoScripts)) {
             $md .= "### Script Usage\n\n";
@@ -288,8 +235,6 @@ class SkillMarkdownBuilder
 
     /**
      * Bundled Resources — non-script files shipped with the skill.
-     * Inspired by: algorithmic-art (templates/viewer.html, templates/generator_template.js),
-     * canvas-design (canvas-fonts/), internal-comms (examples/), theme-factory (themes/).
      */
     private static function buildBundledResourcesSection(array $bundledResources): string
     {
@@ -316,8 +261,8 @@ class SkillMarkdownBuilder
     }
 
     /**
-     * Reference Commands — shell commands generalized with placeholders.
-     * Skipped when auto-generated scripts already cover the workflow.
+     * Reference Commands — generalized shell commands with {{PLACEHOLDER}} vars.
+     * Omitted when auto-generated scripts already cover the workflow.
      */
     private static function buildReferenceCommandsSection(string $referenceCommands, array $bundledScripts): string
     {
@@ -330,35 +275,27 @@ class SkillMarkdownBuilder
             return '';
         }
 
-        $md = "## Reference Commands\n\n";
-        $md .= "Commands for executing this skill (adapt to actual inputs):\n\n";
-        $md .= "```bash\n{$referenceCommands}\n```\n\n";
-        $md .= "Replace `{{PLACEHOLDER}}` values with actual credentials from the key store.\n\n";
-
-        return $md;
+        return "## Reference Commands\n\n```bash\n{$referenceCommands}\n```\n\n";
     }
 
     /**
      * Example — trigger phrases that should match this skill.
-     * Supports both a single string and an array of examples.
+     *
+     * Accepts an array of diverse user queries. Multiple examples improve
+     * skill discoverability across different phrasings of the same intent,
+     * matching the convention used in project skills like `screenshot`.
      */
-    private static function buildExampleSection(string $exampleRequest): string
+    private static function buildExampleSection(array $examples): string
     {
-        if ($exampleRequest === '') {
+        if (empty($examples)) {
             return '';
         }
 
-        $md = "## Example\n\n";
-        $md .= "Example requests that trigger this skill:\n\n";
-        $md .= "```\n{$exampleRequest}\n```\n";
-
-        return $md;
+        return "## Example\n\n```\n" . implode("\n", $examples) . "\n```\n";
     }
 
     /**
      * Notes — tips, gotchas, and important caveats.
-     * Inspired by: pdf ("## Next Steps"), web-artifacts-builder ("VERY IMPORTANT"),
-     * canvas-design ("## FINAL STEP"), algorithmic-art ("### ESSENTIAL PRINCIPLES").
      */
     private static function buildNotesSection(array $notes): string
     {
@@ -372,19 +309,5 @@ class SkillMarkdownBuilder
         }
 
         return $md . "\n";
-    }
-
-    /**
-     * Keywords — explicit trigger keywords to aid skill discovery/matching.
-     * Inspired by: brand-guidelines ("**Keywords**: branding, corporate identity, ..."),
-     * internal-comms ("## Keywords").
-     */
-    private static function buildKeywordsSection(array $keywords): string
-    {
-        if (empty($keywords)) {
-            return '';
-        }
-
-        return "\n## Keywords\n\n" . implode(', ', $keywords) . "\n";
     }
 }

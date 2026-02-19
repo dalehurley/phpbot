@@ -21,7 +21,7 @@ use Dalehurley\Phpbot\Skill\SkillTextUtils;
  *  - SkillMarkdownBuilder  — assembles the SKILL.md file
  *  - SkillTextUtils        — shared text utilities (slugify, sanitise, etc.)
  *  - CredentialPatterns    — credential detection & stripping
- *  - CurlScriptBuilder    — parameterised API script generation
+ *  - CurlScriptBuilder     — parameterised API script generation
  */
 class SkillAutoCreator
 {
@@ -43,7 +43,7 @@ class SkillAutoCreator
     public function autoCreate(
         string $input,
         array $analysis,
-        $result,
+        mixed $result,
         array $resolvedSkills,
         callable $progress
     ): void {
@@ -57,10 +57,10 @@ class SkillAutoCreator
             return;
         }
 
-        // Only skip skill creation if a skill was genuinely matched with high
-        // confidence (fast-path). Low-confidence matches from the resolver
-        // (e.g. "xlsx" matching on "send sms") should NOT prevent creation.
-        if (!empty($analysis['skill_matched'])) {
+        // Only suppress skill creation for high-confidence skill matches (fast-path).
+        // Low-confidence resolver hits (e.g. "xlsx" superficially matching "send sms")
+        // should not prevent a new, more specific skill from being created.
+        if ($this->isHighConfidenceSkillMatch($analysis)) {
             return;
         }
 
@@ -73,19 +73,29 @@ class SkillAutoCreator
             return;
         }
 
-        // --- Extract data from tool calls ---
-
         $toolCalls = $result->getToolCalls();
 
-        $scripts         = ScriptExtractor::fromToolCalls($toolCalls);
-        $recipe          = SkillTextUtils::extractToolRecipe($toolCalls);
+        // Only capture skills from tasks that executed real work (bash commands or
+        // file writes). Pure conversation tasks have nothing durable to generalise.
+        if (!$this->hasSubstantiveToolUse($toolCalls)) {
+            return;
+        }
+
+        // Announce early — LLM generalisation takes a moment and the user should
+        // know something is happening before the response fully appears.
+        $progress('skills', 'Capturing reusable skill from this task…');
+
+        // --- Extract data from tool calls ---
+
+        $scripts          = ScriptExtractor::fromToolCalls($toolCalls);
+        $recipe           = SkillTextUtils::extractToolRecipe($toolCalls);
         $credentialReport = CredentialPatterns::detectFromToolCalls($recipe, $toolCalls);
         $sanitizedRecipe  = CredentialPatterns::strip($recipe);
         $generatedScripts = $this->curlScriptBuilder->generateApiScripts($toolCalls, $credentialReport);
 
         // --- Generalise via LLM ---
 
-        $allScripts  = array_merge($scripts, $generatedScripts);
+        $allScripts = array_merge($scripts, $generatedScripts);
 
         $generalized = $this->generalizer->generalize(
             $input,
@@ -109,6 +119,7 @@ class SkillAutoCreator
         }
 
         if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
+            $progress('skills', "Failed to create skill directory: {$slug}");
             return;
         }
 
@@ -120,10 +131,58 @@ class SkillAutoCreator
             $bundledScripts,
         );
 
-        file_put_contents($dir . '/SKILL.md', $skillMd);
+        if (file_put_contents($dir . '/SKILL.md', $skillMd) === false) {
+            $progress('skills', "Failed to write SKILL.md for: {$slug}");
+            return;
+        }
 
         $scriptCount = count($bundledScripts);
         $scriptNote  = $scriptCount > 0 ? " with {$scriptCount} script(s)" : '';
         $progress('skills', "Created skill: {$slug}{$scriptNote}");
+    }
+
+    // =========================================================================
+    // Private helpers
+    // =========================================================================
+
+    /**
+     * Return true only when a previous skill was matched with high confidence.
+     *
+     * The analysis array may carry a `skill_confidence` key ('high'|'medium'|'low').
+     * When absent, we default to 'high' to preserve backward-compatible behaviour
+     * (if something was matched, assume it was deliberate unless told otherwise).
+     */
+    private function isHighConfidenceSkillMatch(array $analysis): bool
+    {
+        if (empty($analysis['skill_matched'])) {
+            return false;
+        }
+
+        $confidence = $analysis['skill_confidence'] ?? 'high';
+
+        return $confidence === 'high';
+    }
+
+    /**
+     * Return true when the tool call list contains at least one bash execution
+     * or file-write operation — the signals that indicate generalizable work.
+     *
+     * Tasks that only called ask_user, get_keys, or read-only tools produced
+     * no durable artefact and are not worth capturing as a skill.
+     */
+    private function hasSubstantiveToolUse(array $toolCalls): bool
+    {
+        foreach ($toolCalls as $call) {
+            if (!empty($call['is_error'])) {
+                continue;
+            }
+
+            $tool = $call['tool'] ?? '';
+            if ($tool === 'bash' || $tool === 'write_file') {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
