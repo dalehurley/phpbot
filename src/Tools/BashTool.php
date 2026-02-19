@@ -7,6 +7,9 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\DryRun\DryRunContext;
+use Dalehurley\Phpbot\Storage\BackupManager;
+use Dalehurley\Phpbot\Storage\RollbackManager;
 
 class BashTool implements ToolInterface
 {
@@ -16,12 +19,18 @@ class BashTool implements ToolInterface
     private string $workingDirectory;
     private int $consecutiveEmptyCount = 0;
     private int $maxOutputChars;
+    private ?BackupManager $backupManager;
+    private ?RollbackManager $rollbackManager;
+    private ?string $sessionId;
 
-    public function __construct(array $config = [])
+    public function __construct(array $config = [], ?BackupManager $backupManager = null, ?RollbackManager $rollbackManager = null, ?string $sessionId = null)
     {
         $this->config = $config;
         $this->workingDirectory = $config['working_directory'] ?? getcwd();
         $this->maxOutputChars = (int) ($config['bash_max_output_chars'] ?? 15000);
+        $this->backupManager = $backupManager;
+        $this->rollbackManager = $rollbackManager;
+        $this->sessionId = $sessionId;
 
         // Commands that are explicitly allowed (empty = all allowed except blocked)
         $this->allowedCommands = $config['allowed_commands'] ?? [];
@@ -92,6 +101,27 @@ class BashTool implements ToolInterface
 
         // Reset counter on valid command
         $this->consecutiveEmptyCount = 0;
+
+        // Dry-run: simulate without executing
+        if (DryRunContext::isActive()) {
+            DryRunContext::record('bash', 'Execute command', [
+                'command' => $command,
+                'working_directory' => $workingDir,
+            ]);
+            return ToolResult::success(json_encode([
+                'stdout' => '',
+                'stderr' => '',
+                'exit_code' => 0,
+                'command' => $command,
+                'working_directory' => $workingDir,
+                'success' => true,
+                'dry_run' => true,
+                'message' => '[DRY-RUN] Command execution simulated — not run.',
+            ]));
+        }
+
+        // Auto-backup files that bash is about to overwrite
+        $this->backupTargetFiles($command, $workingDir);
 
         // Check for blocked commands
         foreach ($this->blockedCommands as $blocked) {
@@ -246,6 +276,129 @@ class BashTool implements ToolInterface
         return substr($output, 0, $halfMax) .
             "\n\n... [output truncated: ~{$totalLines} lines total, showing first and last portions] ...\n\n" .
             substr($output, -$halfMax);
+    }
+
+    /**
+     * Detect bash write patterns and backup any existing target files before
+     * the command overwrites them.
+     *
+     * Patterns detected:
+     *   cat > /path, cat >> /path, echo ... > /path, echo ... >> /path
+     *   tee /path, tee -a /path, sed -i ... /path, cp /src /dest
+     *   heredoc: command > /path << 'EOF', cat > /path << EOF
+     */
+    private function backupTargetFiles(string $command, string $workingDir): void
+    {
+        if ($this->backupManager === null) {
+            return;
+        }
+
+        $targets = $this->extractWriteTargets($command, $workingDir);
+
+        foreach ($targets as $path) {
+            if (!is_file($path)) {
+                continue;
+            }
+
+            $this->backupManager->backup($path);
+
+            if ($this->rollbackManager !== null && $this->sessionId !== null) {
+                try {
+                    $this->rollbackManager->createSnapshot($this->sessionId, [$path]);
+                } catch (\Throwable) {
+                    // Non-fatal
+                }
+            }
+        }
+    }
+
+    /**
+     * Extract file paths that a bash command will overwrite.
+     *
+     * @return string[] Resolved absolute file paths
+     */
+    private function extractWriteTargets(string $command, string $workingDir): array
+    {
+        $targets = [];
+
+        // Patterns that write to a file path:
+        // 1. Redirect: anything > /path or >> /path  (excluding variable assignments like FOO=bar)
+        // 2. tee [options] /path
+        // 3. sed -i [options] /path (last non-flag argument)
+        // 4. cp /src /dest  (last argument)
+
+        // Redirect: > path or >> path — capture the path token after > or >>
+        if (preg_match_all('/(?<![=<>])[>]{1,2}\s*([^\s|&;><]+)/', $command, $m)) {
+            foreach ($m[1] as $raw) {
+                $resolved = $this->resolvePath($raw, $workingDir);
+                if ($resolved !== null) {
+                    $targets[] = $resolved;
+                }
+            }
+        }
+
+        // tee: `tee [-a] path`
+        if (preg_match('/\btee\s+(?:-a\s+)?([^\s|&;><]+)/', $command, $m)) {
+            $resolved = $this->resolvePath($m[1], $workingDir);
+            if ($resolved !== null) {
+                $targets[] = $resolved;
+            }
+        }
+
+        // sed -i: last non-option token is the file
+        if (preg_match('/\bsed\s+.*?-i\b.*?\s+([^\s\'"]+)\s*$/', $command, $m)) {
+            $resolved = $this->resolvePath($m[1], $workingDir);
+            if ($resolved !== null) {
+                $targets[] = $resolved;
+            }
+        }
+
+        // cp src dest: last two path-looking tokens
+        if (preg_match('/\bcp\s+(?:-[^\s]+\s+)*([^\s]+)\s+([^\s]+)\s*$/', $command, $m)) {
+            $resolved = $this->resolvePath($m[2], $workingDir);
+            if ($resolved !== null) {
+                $targets[] = $resolved;
+            }
+        }
+
+        // mv src dest: destination may be overwritten
+        if (preg_match('/\bmv\s+(?:-[^\s]+\s+)*([^\s]+)\s+([^\s]+)\s*$/', $command, $m)) {
+            $resolved = $this->resolvePath($m[2], $workingDir);
+            if ($resolved !== null) {
+                $targets[] = $resolved;
+            }
+        }
+
+        return array_unique($targets);
+    }
+
+    /**
+     * Resolve a raw path token (may contain ~, be relative, etc.) to an absolute path.
+     * Returns null if the path looks like a special file, pipe, or device.
+     */
+    private function resolvePath(string $raw, string $workingDir): ?string
+    {
+        // Strip quotes
+        $raw = trim($raw, '"\'');
+
+        // Skip obvious non-paths
+        if ($raw === '' || str_starts_with($raw, '/dev/') || str_starts_with($raw, '/proc/')) {
+            return null;
+        }
+
+        // Expand ~
+        if (str_starts_with($raw, '~/') || $raw === '~') {
+            $home = getenv('HOME') ?: '/tmp';
+            $raw = $home . substr($raw, 1);
+        }
+
+        // Make relative paths absolute
+        if (!str_starts_with($raw, '/')) {
+            $raw = rtrim($workingDir, '/') . '/' . $raw;
+        }
+
+        // Resolve .. etc without requiring the path to exist yet
+        return $raw;
     }
 
     public function toDefinition(): array

@@ -7,6 +7,7 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\Cache\CacheManager;
 use Dalehurley\Phpbot\Platform;
 
 /**
@@ -18,10 +19,12 @@ class SearchComputerTool implements ToolInterface
 {
     use ToolDefinitionTrait;
     private string $homeDir;
+    private ?CacheManager $cacheManager;
 
-    public function __construct()
+    public function __construct(?CacheManager $cacheManager = null)
     {
         $this->homeDir = getenv('HOME') ?: (getenv('USERPROFILE') ?: '/tmp');
+        $this->cacheManager = $cacheManager;
     }
 
     public function getName(): string
@@ -95,6 +98,15 @@ class SearchComputerTool implements ToolInterface
         $includeConfig = $input['include_config_files'] ?? true;
         $maxDepth = (int) ($input['max_depth'] ?? 3);
 
+        // Check cache for filesystem scans (env vars are always fresh)
+        if ($this->cacheManager !== null && $includeDotenv) {
+            $cacheKey = 'search_computer_' . md5(json_encode($searchTerms) . json_encode($extraLocations) . $maxDepth);
+            $cached = $this->cacheManager->get($cacheKey);
+            if ($cached !== null && is_string($cached)) {
+                return ToolResult::success($cached);
+            }
+        }
+
         $results = [];
         $searchedLocations = [];
 
@@ -152,7 +164,7 @@ class SearchComputerTool implements ToolInterface
         // Build a flat summary of found key=value pairs for easy consumption
         $foundKeys = $this->flattenResults($results);
 
-        return ToolResult::success(json_encode([
+        $payload = json_encode([
             'found' => $foundKeys,
             'found_count' => count($foundKeys),
             'details' => $results,
@@ -161,7 +173,14 @@ class SearchComputerTool implements ToolInterface
             'hint' => count($foundKeys) > 0
                 ? 'Found credentials. Use store_keys to save them for future use.'
                 : 'No credentials found. Use ask_user to request them from the user.',
-        ]));
+        ]);
+
+        // Cache the result for filesystem scans
+        if ($this->cacheManager !== null && $includeDotenv && isset($cacheKey)) {
+            $this->cacheManager->set($cacheKey, $payload, 300);
+        }
+
+        return ToolResult::success($payload);
     }
 
     // -------------------------------------------------------------------------

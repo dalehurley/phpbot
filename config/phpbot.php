@@ -310,6 +310,42 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Smart File Backup
+    |--------------------------------------------------------------------------
+    | Automatic backups are created before any write/edit operation.
+    | backup_versions_to_keep: how many backup versions to retain per file.
+    */
+    'backup_versions_to_keep' => (int) $env('PHPBOT_BACKUP_VERSIONS', 5),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Cache Manager
+    |--------------------------------------------------------------------------
+    | TTL for cached operations like filesystem scans (in seconds).
+    | Set to 0 to disable caching entirely.
+    */
+    'cache_ttl_seconds' => (int) $env('PHPBOT_CACHE_TTL', 300),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Parallel Execution
+    |--------------------------------------------------------------------------
+    | Maximum number of parallel operations using pcntl_fork.
+    | Set to 1 to disable parallel execution.
+    */
+    'max_parallel_operations' => (int) $env('PHPBOT_MAX_PARALLEL', 4),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Checkpoint Interval
+    |--------------------------------------------------------------------------
+    | Save a checkpoint every N tool calls during agent execution.
+    | Allows resuming long tasks after crashes or timeouts.
+    */
+    'checkpoint_interval' => (int) $env('PHPBOT_CHECKPOINT_INTERVAL', 5),
+
+    /*
+    |--------------------------------------------------------------------------
     | Working Directory
     |--------------------------------------------------------------------------
     | Default working directory for bash commands.

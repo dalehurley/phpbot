@@ -7,6 +7,8 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\DryRun\DryRunContext;
+use Dalehurley\Phpbot\Storage\BackupManager;
 
 class WriteFileTool implements ToolInterface
 {
@@ -15,9 +17,12 @@ class WriteFileTool implements ToolInterface
     /** @var array<string> Paths of files created during this session */
     private array $createdFiles = [];
 
-    public function __construct(string $storagePath = '')
+    private ?BackupManager $backupManager;
+
+    public function __construct(string $storagePath = '', ?BackupManager $backupManager = null)
     {
         $this->storagePath = $storagePath;
+        $this->backupManager = $backupManager;
     }
 
     public function getName(): string
@@ -69,12 +74,33 @@ class WriteFileTool implements ToolInterface
         // Resolve the path to the storage directory
         $resolvedPath = $this->resolveStoragePath($path);
 
+        // Dry-run: simulate without writing
+        if (DryRunContext::isActive()) {
+            DryRunContext::record('write_file', 'Write file', [
+                'path' => $resolvedPath,
+                'bytes' => strlen($content),
+                'append' => $append ? 'yes' : 'no',
+            ]);
+            return ToolResult::success(json_encode([
+                'path' => $resolvedPath,
+                'bytes_written' => strlen($content),
+                'append' => $append,
+                'dry_run' => true,
+                'message' => '[DRY-RUN] File write simulated — no changes made.',
+            ]));
+        }
+
         // Ensure parent directories exist
         $dir = dirname($resolvedPath);
         if (!is_dir($dir)) {
             if (!mkdir($dir, 0755, true) && !is_dir($dir)) {
                 return ToolResult::error("Failed to create directory: {$dir}");
             }
+        }
+
+        // Auto-backup existing file before overwriting
+        if (!$append && $this->backupManager !== null) {
+            $this->backupManager->backup($resolvedPath);
         }
 
         $flags = $append ? FILE_APPEND : 0;

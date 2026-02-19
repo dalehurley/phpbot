@@ -7,9 +7,26 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\DryRun\DryRunContext;
+use Dalehurley\Phpbot\Storage\BackupManager;
+use Dalehurley\Phpbot\Storage\RollbackManager;
 
 class EditFileTool implements ToolInterface
 {
+    private ?BackupManager $backupManager;
+    private ?RollbackManager $rollbackManager;
+    private ?string $sessionId;
+
+    public function __construct(
+        ?BackupManager $backupManager = null,
+        ?RollbackManager $rollbackManager = null,
+        ?string $sessionId = null,
+    ) {
+        $this->backupManager = $backupManager;
+        $this->rollbackManager = $rollbackManager;
+        $this->sessionId = $sessionId;
+    }
+
     public function getName(): string
     {
         return 'edit_file';
@@ -87,6 +104,36 @@ class EditFileTool implements ToolInterface
 
         if ($count === 0) {
             return ToolResult::error('Search string not found in file.');
+        }
+
+        // Dry-run: simulate without writing
+        if (DryRunContext::isActive()) {
+            DryRunContext::record('edit_file', 'Edit file', [
+                'path' => $path,
+                'search' => mb_substr($search, 0, 60),
+                'replace' => mb_substr($replace, 0, 60),
+                'occurrences' => $count,
+            ]);
+            return ToolResult::success(json_encode([
+                'path' => $path,
+                'replacements' => $count,
+                'dry_run' => true,
+                'message' => '[DRY-RUN] File edit simulated — no changes made.',
+            ]));
+        }
+
+        // Snapshot in rollback manager (first edit of this file per session)
+        if ($this->rollbackManager !== null && $this->sessionId !== null) {
+            try {
+                $this->rollbackManager->createSnapshot($this->sessionId, [$path]);
+            } catch (\Throwable) {
+                // Non-fatal: continue even if snapshot fails
+            }
+        }
+
+        // Auto-backup before writing
+        if ($this->backupManager !== null) {
+            $this->backupManager->backup($path);
         }
 
         $result = file_put_contents($path, $newContent);

@@ -7,20 +7,29 @@ namespace Dalehurley\Phpbot;
 use ClaudeAgents\Vendor\CrossVendorToolFactory;
 use ClaudeAgents\Vendor\VendorConfig;
 use ClaudeAgents\Vendor\VendorRegistry;
-use Dalehurley\Phpbot\Tools\BashTool;
-use Dalehurley\Phpbot\Tools\ReadFileTool;
-use Dalehurley\Phpbot\Tools\WriteFileTool;
-use Dalehurley\Phpbot\Tools\EditFileTool;
-use Dalehurley\Phpbot\Tools\SkillScriptTool;
+use Dalehurley\Phpbot\Cache\CacheManager;
+use Dalehurley\Phpbot\Security\KeyRotationManager;
+use Dalehurley\Phpbot\Storage\BackupManager;
+use Dalehurley\Phpbot\Storage\RollbackManager;
+use Dalehurley\Phpbot\Tools\AnalyzeImpactTool;
 use Dalehurley\Phpbot\Tools\AskUserTool;
-use Dalehurley\Phpbot\Tools\GetKeysTool;
-use Dalehurley\Phpbot\Tools\StoreKeysTool;
-use Dalehurley\Phpbot\Tools\SearchComputerTool;
-use Dalehurley\Phpbot\Tools\SearchCapabilitiesTool;
 use Dalehurley\Phpbot\Tools\AppleServicesTool;
+use Dalehurley\Phpbot\Tools\BashTool;
 use Dalehurley\Phpbot\Tools\BrewTool;
+use Dalehurley\Phpbot\Tools\EditFileTool;
+use Dalehurley\Phpbot\Tools\GetKeysTool;
+use Dalehurley\Phpbot\Tools\KeyRotationTool;
+use Dalehurley\Phpbot\Tools\ReadFileTool;
+use Dalehurley\Phpbot\Tools\RestoreFileTool;
+use Dalehurley\Phpbot\Tools\RollbackTool;
+use Dalehurley\Phpbot\Tools\SearchCapabilitiesTool;
+use Dalehurley\Phpbot\Tools\SearchComputerTool;
+use Dalehurley\Phpbot\Tools\SkillScriptTool;
+use Dalehurley\Phpbot\Tools\StoreKeysTool;
 use Dalehurley\Phpbot\Tools\ToolBuilderTool;
 use Dalehurley\Phpbot\Tools\ToolPromoterTool;
+use Dalehurley\Phpbot\Tools\VerifyOperationTool;
+use Dalehurley\Phpbot\Tools\WriteFileTool;
 use Dalehurley\Phpbot\Registry\PersistentToolRegistry;
 use Dalehurley\Phpbot\Router\RouteResult;
 use Dalehurley\Phpbot\Storage\KeyStore;
@@ -32,10 +41,30 @@ class ToolRegistrar
     /** @var string[] Names of registered vendor tools */
     private array $vendorToolNames = [];
 
+    private ?BackupManager $backupManager = null;
+    private ?RollbackManager $rollbackManager = null;
+    private ?CacheManager $cacheManager = null;
+    private ?string $sessionId = null;
+
     public function __construct(
         private PersistentToolRegistry $registry,
         private array $config
     ) {}
+
+    /**
+     * Inject shared infrastructure managers used by multiple tools.
+     */
+    public function setManagers(
+        ?BackupManager $backupManager = null,
+        ?RollbackManager $rollbackManager = null,
+        ?CacheManager $cacheManager = null,
+        ?string $sessionId = null,
+    ): void {
+        $this->backupManager = $backupManager;
+        $this->rollbackManager = $rollbackManager;
+        $this->cacheManager = $cacheManager;
+        $this->sessionId = $sessionId;
+    }
 
     public function getRegistry(): PersistentToolRegistry
     {
@@ -56,14 +85,14 @@ class ToolRegistrar
     public function registerCoreTools(): void
     {
         $storagePath = $this->config['files_storage_path'] ?? '';
-        $this->registry->register(new BashTool($this->config));
+        $this->registry->register(new BashTool($this->config, $this->backupManager, $this->rollbackManager, $this->sessionId));
         $this->registry->register(new ReadFileTool());
-        $this->registry->register(new WriteFileTool($storagePath));
-        $this->registry->register(new EditFileTool());
+        $this->registry->register(new WriteFileTool($storagePath, $this->backupManager));
+        $this->registry->register(new EditFileTool($this->backupManager, $this->rollbackManager, $this->sessionId));
         $this->registry->register(new AskUserTool());
         $this->registry->register(new GetKeysTool($this->config));
         $this->registry->register(new StoreKeysTool($this->config));
-        $this->registry->register(new SearchComputerTool());
+        $this->registry->register(new SearchComputerTool($this->cacheManager));
         $this->registry->register(new BrewTool($this->config));
 
         // Register Apple services tool on macOS only
@@ -73,6 +102,23 @@ class ToolRegistrar
 
         $this->registry->register(new ToolBuilderTool($this->registry));
         $this->registry->register(new ToolPromoterTool($this->registry));
+
+        // Register safety & operations tools
+        if ($this->backupManager !== null) {
+            $this->registry->register(new RestoreFileTool($this->backupManager));
+        }
+
+        if ($this->rollbackManager !== null) {
+            $this->registry->register(new RollbackTool($this->rollbackManager));
+        }
+
+        $this->registry->register(new VerifyOperationTool($this->backupManager));
+        $this->registry->register(new AnalyzeImpactTool());
+        $this->registry->register(new KeyRotationTool(
+            new KeyRotationManager(),
+            $this->rollbackManager,
+            $this->sessionId,
+        ));
 
         $this->registry->loadPersistedTools();
 
@@ -164,6 +210,11 @@ class ToolRegistrar
         'apple_services',
         'tool_builder',
         'tool_promoter',
+        'restore_file',
+        'rollback',
+        'verify_operation',
+        'analyze_impact',
+        'rotate_keys',
     ];
 
     /** Minimal tools always present for routed requests. */
@@ -174,6 +225,11 @@ class ToolRegistrar
         'store_keys',
         'search_computer',
         'ask_user',
+        'restore_file',
+        'rollback',
+        'verify_operation',
+        'analyze_impact',
+        'rotate_keys',
     ];
 
     /**

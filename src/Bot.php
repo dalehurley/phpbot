@@ -15,16 +15,21 @@ use Dalehurley\Phpbot\Apple\AppleFMSkillFilter;
 use Dalehurley\Phpbot\Apple\HaikuModelClient;
 use Dalehurley\Phpbot\Apple\SmallModelClient;
 use Dalehurley\Phpbot\Apple\ToolResultSummarizer;
+use Dalehurley\Phpbot\Cache\CacheManager;
 use Dalehurley\Phpbot\Conversation\ConversationHistory;
 use Dalehurley\Phpbot\Conversation\ConversationSummarizer;
 use Dalehurley\Phpbot\Conversation\ConversationTurn;
+use Dalehurley\Phpbot\DryRun\DryRunContext;
 use Dalehurley\Phpbot\Prompt\TieredPromptBuilder;
 use Dalehurley\Phpbot\Router\CachedRouter;
 use Dalehurley\Phpbot\Router\ClassifierClient;
 use Dalehurley\Phpbot\Router\RouteResult;
 use Dalehurley\Phpbot\Router\RouterCache;
 use Dalehurley\Phpbot\Stats\TokenLedger;
+use Dalehurley\Phpbot\Storage\BackupManager;
 use Dalehurley\Phpbot\Storage\KeyStore;
+use Dalehurley\Phpbot\Storage\RollbackManager;
+use Dalehurley\Phpbot\Storage\TaskHistory;
 
 class Bot
 {
@@ -45,6 +50,11 @@ class Bot
     private ?AppleFMSkillFilter $skillFilter = null;
     private ?ConversationHistory $conversationHistory = null;
     private ?ConversationSummarizer $conversationSummarizer = null;
+    private string $sessionId;
+    private BackupManager $backupManager;
+    private RollbackManager $rollbackManager;
+    private CacheManager $cacheManager;
+    private ?TaskHistory $taskHistory = null;
 
     /** @var callable|null External logger: fn(string $message) => void */
     private $fileLogger = null;
@@ -61,8 +71,33 @@ class Bot
         );
         $this->initAppleFM();
 
+        // Generate a unique session ID for this Bot instance
+        $this->sessionId = date('Ymd-His') . '-' . bin2hex(random_bytes(4));
+
+        // Initialize infrastructure managers
+        // tools_storage_path = .../storage/tools  →  dirname = .../storage
+        $storageDir = dirname($this->config['tools_storage_path'] ?? dirname(__DIR__) . '/storage/tools');
+        $this->backupManager = new BackupManager(
+            $storageDir . '/backups',
+            (int) ($this->config['backup_versions_to_keep'] ?? 5),
+        );
+        $this->rollbackManager = new RollbackManager($storageDir . '/rollback');
+        $this->cacheManager = new CacheManager(
+            $storageDir . '/cache',
+            (int) ($this->config['cache_ttl_seconds'] ?? 300),
+        );
+
+        // Initialize task history
+        $this->taskHistory = new TaskHistory($storageDir . '/history');
+
         $this->toolRegistry = new PersistentToolRegistry($this->config['tools_storage_path']);
         $this->toolRegistrar = new ToolRegistrar($this->toolRegistry, $this->config);
+        $this->toolRegistrar->setManagers(
+            $this->backupManager,
+            $this->rollbackManager,
+            $this->cacheManager,
+            $this->sessionId,
+        );
         $this->agentSelector = new AgentSelector();
 
         $this->toolRegistrar->registerCoreTools();
@@ -84,6 +119,42 @@ class Bot
 
         $this->log("📝 Received input: {$input}");
         $progress('start', 'Received input');
+
+        // Record task description in rollback session for identification
+        try {
+            $this->rollbackManager->setSessionTask($this->sessionId, $input);
+        } catch (\Throwable) {
+            // Non-fatal
+        }
+
+        // Inject dry-run instructions when active
+        if (DryRunContext::isActive()) {
+            $this->log('🔍 [DRY-RUN] Mode active — simulating execution');
+        }
+
+        // Register SIGINT handler to save checkpoint on Ctrl+C
+        if (function_exists('pcntl_signal') && function_exists('pcntl_async_signals')) {
+            pcntl_async_signals(true);
+        }
+        if (function_exists('pcntl_signal')) {
+            $sessionId = $this->sessionId;
+            $checkpointDir = dirname($this->config['tools_storage_path'] ?? dirname(__DIR__) . '/storage/tools') . '/checkpoints';
+            $checkpointManager = new \Dalehurley\Phpbot\Storage\CheckpointManager($checkpointDir);
+            pcntl_signal(SIGINT, function () use ($sessionId, $input, $checkpointManager) {
+                try {
+                    $checkpointManager->save($sessionId, [
+                        'task' => $input,
+                        'iteration' => 0,
+                        'interrupted' => true,
+                    ]);
+                    echo "\n⚠️  Interrupted. Checkpoint saved (session: {$sessionId}).\n";
+                    echo "   Resume with: phpbot --resume {$sessionId}\n";
+                } catch (\Throwable) {
+                    // Ignore
+                }
+                exit(130);
+            });
+        }
 
         // =====================================================================
         // Phase 1: Router — try to resolve without the agent
@@ -187,6 +258,8 @@ class Bot
             'iteration_summarizer' => $summarizer,
             'tool_result_summarizer' => $this->toolSummarizer,
             'context_compactor' => $this->contextCompactor,
+            'session_id' => $this->sessionId,
+            'task_input' => $input,
         ]);
         $agentFactory = new AgentFactory($clientFactory, $effectiveConfig, $this->verbose);
 
@@ -297,7 +370,50 @@ class Bot
 
         $this->recordConversationTurn($input, $botResult);
 
+        // Record successful tasks in task history for replay/reference
+        if ($botResult->isSuccess() && $this->taskHistory !== null) {
+            try {
+                $this->taskHistory->record(
+                    $input,
+                    $botResult->getAnswer() ?? '',
+                    [],
+                    [
+                        'session_id' => $this->sessionId,
+                        'iterations' => $botResult->getIterations(),
+                        'tools_used' => array_unique(array_column($botResult->getToolCalls(), 'tool')),
+                    ],
+                );
+            } catch (\Throwable) {
+                // Non-fatal
+            }
+        }
+
         return $botResult;
+    }
+
+    public function getSessionId(): string
+    {
+        return $this->sessionId;
+    }
+
+    public function getBackupManager(): BackupManager
+    {
+        return $this->backupManager;
+    }
+
+    public function getRollbackManager(): RollbackManager
+    {
+        return $this->rollbackManager;
+    }
+
+    public function getCacheManager(): CacheManager
+    {
+        return $this->cacheManager;
+    }
+
+    public function getTaskHistory(): ?TaskHistory
+    {
+        return $this->taskHistory;
     }
 
     public function getToolRegistry(): PersistentToolRegistry
@@ -390,6 +506,10 @@ class Bot
             'files_storage_path' => dirname(__DIR__) . '/storage/files',
             'skills_path' => dirname(__DIR__) . '/skills',
             'keys_storage_path' => dirname(__DIR__) . '/storage/keys.json',
+            'backup_versions_to_keep' => 5,
+            'cache_ttl_seconds' => 300,
+            'max_parallel_operations' => 4,
+            'checkpoint_interval' => 5,
         ];
     }
 
@@ -655,8 +775,18 @@ class Bot
         // into Apple FM's constrained context (handled in Phase 2a).
         if (!empty($resolvedSkills)) {
             $composer = new SkillPromptComposer();
+            $basePrompt = $composer->compose($basePrompt, $resolvedSkills);
+        }
 
-            return $composer->compose($basePrompt, $resolvedSkills);
+        // Prepend dry-run notice so the agent knows to describe instead of execute
+        if (DryRunContext::isActive()) {
+            $dryRunNotice = "\n\n## DRY-RUN MODE ACTIVE\n"
+                . "You are running in dry-run (simulation) mode. "
+                . "ALL destructive tools (bash, write_file, edit_file, store_keys, rotate_keys) "
+                . "are intercepted and will NOT make real changes. "
+                . "Describe what you WOULD do step by step, then present the execution plan. "
+                . "After completing the simulation, ask the user if they want to proceed with real execution.\n";
+            return $dryRunNotice . $basePrompt;
         }
 
         return $basePrompt;

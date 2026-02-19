@@ -5,15 +5,20 @@ declare(strict_types=1);
 namespace Dalehurley\Phpbot\CLI;
 
 use Dalehurley\Phpbot\Bot;
+use Dalehurley\Phpbot\Cache\CacheManager;
 use Dalehurley\Phpbot\Conversation\ConversationHistory;
 use Dalehurley\Phpbot\Conversation\ConversationLayer;
 use Dalehurley\Phpbot\Daemon\DaemonRunner;
+use Dalehurley\Phpbot\DryRun\DryRunContext;
 use Dalehurley\Phpbot\Platform;
 use Dalehurley\Phpbot\Scheduler\CronMatcher;
 use Dalehurley\Phpbot\Scheduler\Scheduler;
 use Dalehurley\Phpbot\Scheduler\Task;
 use Dalehurley\Phpbot\Scheduler\TaskStore;
+use Dalehurley\Phpbot\Storage\CheckpointManager;
 use Dalehurley\Phpbot\Storage\KeyStore;
+use Dalehurley\Phpbot\Storage\RollbackManager;
+use Dalehurley\Phpbot\Storage\TaskHistory;
 
 class Application
 {
@@ -23,6 +28,8 @@ class Application
     private bool $verbose = false;
     private FileResolver $fileResolver;
     private ?ConversationHistory $conversationHistory = null;
+    private bool $dryRun = false;
+    private bool $noCache = false;
 
     public function __construct(array $config = [])
     {
@@ -34,6 +41,8 @@ class Application
     {
         $args = $this->parseArguments($argv);
         $this->verbose = $args['verbose'];
+        $this->dryRun = $args['dry-run'];
+        $this->noCache = $args['no-cache'];
 
         // Handle special commands
         if ($args['help']) {
@@ -41,13 +50,33 @@ class Application
             return 0;
         }
 
-        if ($args['version']) {
+        if ($args['show-version']) {
             $this->showVersion();
             return 0;
         }
 
         if ($args['list-tools']) {
             return $this->listTools($args['verbose']);
+        }
+
+        // --rollback: list sessions or roll back a specific session
+        if ($args['rollback'] !== null) {
+            return $this->handleRollbackCommand($args['rollback']);
+        }
+
+        // --restore: list backups or restore a file
+        if ($args['restore'] !== null) {
+            return $this->handleRestoreCommand($args['restore'], $args['version']);
+        }
+
+        // --history: list task history
+        if ($args['history']) {
+            return $this->handleHistoryCommand();
+        }
+
+        // --replay: replay a historical task
+        if ($args['replay'] !== null) {
+            // Handled below after bot init
         }
 
         // First-run setup: no .env and no API key configured anywhere
@@ -70,8 +99,28 @@ class Application
             return 1;
         }
 
+        // Activate dry-run and no-cache modes before bot init
+        if ($this->dryRun) {
+            DryRunContext::activate();
+            $this->output("\n[DRY-RUN] Simulation mode active — no real changes will be made.\n\n");
+        }
+
+        if ($this->noCache) {
+            CacheManager::disableGlobally();
+        }
+
         // Initialize bot
         $this->bot = new Bot($this->config, $args['verbose']);
+
+        // --replay: load task and run with optional overrides
+        if ($args['replay'] !== null) {
+            return $this->handleReplayCommand($args['replay'], $args['with']);
+        }
+
+        // --resume: resume from checkpoint
+        if ($args['resume'] !== null) {
+            return $this->handleResumeCommand($args['resume']);
+        }
 
         // Handle different modes
         if ($args['interactive']) {
@@ -90,11 +139,20 @@ class Application
     {
         $args = [
             'help' => false,
-            'version' => false,
+            'show-version' => false,
             'verbose' => false,
             'interactive' => false,
             'list-tools' => false,
             'daemon' => false,
+            'dry-run' => false,
+            'no-cache' => false,
+            'rollback' => null,   // string|null: session ID or '' to list
+            'restore' => null,    // string|null: file path or '' to list
+            'version' => null,    // int|null: backup version number for restore
+            'history' => false,
+            'replay' => null,     // string|null: task ID
+            'with' => [],         // array: key=value overrides for replay
+            'resume' => null,     // string|null: session ID
             'input' => '',
         ];
 
@@ -111,7 +169,7 @@ class Application
                     break;
                 case '-V':
                 case '--version':
-                    $args['version'] = true;
+                    $args['show-version'] = true;
                     break;
                 case '-v':
                 case '--verbose':
@@ -135,6 +193,51 @@ class Application
                         $args['input'] = $argv[++$i];
                     }
                     break;
+                case '--dry-run':
+                    $args['dry-run'] = true;
+                    break;
+                case '--no-cache':
+                    $args['no-cache'] = true;
+                    break;
+                case '--rollback':
+                    $args['rollback'] = isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')
+                        ? $argv[++$i]
+                        : '';
+                    break;
+                case '--restore':
+                    $args['restore'] = isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')
+                        ? $argv[++$i]
+                        : '';
+                    break;
+                case '--version-num':
+                    if (isset($argv[$i + 1])) {
+                        $args['version'] = (int) $argv[++$i];
+                    }
+                    break;
+                case '--history':
+                    $args['history'] = true;
+                    break;
+                case '--replay':
+                    if (isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')) {
+                        $args['replay'] = $argv[++$i];
+                    }
+                    break;
+                case '--with':
+                    if (isset($argv[$i + 1])) {
+                        $kv = $argv[++$i];
+                        if (str_contains($kv, '=')) {
+                            [$k, $v] = explode('=', $kv, 2);
+                            $args['with'][$k] = $v;
+                        }
+                    }
+                    break;
+                case '--resume':
+                    if (isset($argv[$i + 1]) && !str_starts_with($argv[$i + 1], '-')) {
+                        $args['resume'] = $argv[++$i];
+                    } else {
+                        $args['resume'] = '';
+                    }
+                    break;
                 default:
                     if (!str_starts_with($arg, '-')) {
                         $input[] = $arg;
@@ -150,6 +253,184 @@ class Application
         return $args;
     }
 
+    // -------------------------------------------------------------------------
+    // New CLI commands: rollback, restore, history, replay, resume
+    // -------------------------------------------------------------------------
+
+    private function handleRollbackCommand(string $sessionId): int
+    {
+        $storageRoot = dirname(__DIR__, 2) . '/storage/rollback';
+        $rollbackManager = new RollbackManager($storageRoot);
+
+        if ($sessionId === '') {
+            $sessions = $rollbackManager->listSessions();
+            if (empty($sessions)) {
+                $this->output("No rollback sessions available.\n");
+                return 0;
+            }
+            $this->output("\nAvailable Rollback Sessions (" . count($sessions) . "):\n");
+            $this->output(str_repeat('-', 60) . "\n");
+            foreach ($sessions as $s) {
+                $this->output("  ID:      {$s['session_id']}\n");
+                $this->output("  Created: {$s['created_at']}\n");
+                $this->output("  Files:   {$s['file_count']}\n");
+                if (!empty($s['task_preview'])) {
+                    $this->output("  Task:    {$s['task_preview']}\n");
+                }
+                $this->output("\n");
+            }
+            $this->output("Usage: phpbot --rollback <session-id>\n\n");
+            return 0;
+        }
+
+        $this->output("\nRolling back session: {$sessionId}\n");
+        try {
+            $report = $rollbackManager->rollback($sessionId);
+            $this->output("  Restored: " . implode(', ', $report['restored'] ?: ['none']) . "\n");
+            $this->output("  Deleted:  " . implode(', ', $report['deleted'] ?: ['none']) . "\n");
+            if (!empty($report['errors'])) {
+                $this->error("  Errors: " . implode(', ', $report['errors']) . "\n");
+            }
+            $this->output("Rollback complete.\n\n");
+        } catch (\Throwable $e) {
+            $this->error("Rollback failed: {$e->getMessage()}\n");
+            return 1;
+        }
+
+        return 0;
+    }
+
+    private function handleRestoreCommand(string $filePath, ?int $version): int
+    {
+        $storageRoot = dirname(__DIR__, 2) . '/storage/backups';
+        $backupManager = new \Dalehurley\Phpbot\Storage\BackupManager($storageRoot);
+
+        if ($filePath === '') {
+            $this->output("Usage: phpbot --restore <file-path> [--version-num <n>]\n\n");
+            return 0;
+        }
+
+        if ($version === null) {
+            // List available backups
+            $backups = $backupManager->listBackups($filePath);
+            if (empty($backups)) {
+                $this->output("No backups found for: {$filePath}\n");
+                return 0;
+            }
+            $this->output("\nBackups for: {$filePath}\n");
+            $this->output(str_repeat('-', 60) . "\n");
+            foreach ($backups as $b) {
+                $size = round($b['size'] / 1024, 1);
+                $this->output("  Version {$b['version']} ({$b['date']})  {$size} KB  {$b['path']}\n");
+            }
+            $this->output("\nUsage: phpbot --restore {$filePath} --version-num <n>\n\n");
+            return 0;
+        }
+
+        $this->output("Restoring {$filePath} to version {$version}...\n");
+        try {
+            $restoredFrom = $backupManager->restore($filePath, $version);
+            $this->output("Restored from: {$restoredFrom}\n\n");
+        } catch (\Throwable $e) {
+            $this->error("Restore failed: {$e->getMessage()}\n");
+            return 1;
+        }
+
+        return 0;
+    }
+
+    private function handleHistoryCommand(): int
+    {
+        $historyDir = dirname(__DIR__, 2) . '/storage/history';
+        $history = new TaskHistory($historyDir);
+        $entries = $history->list(20);
+
+        if (empty($entries)) {
+            $this->output("No task history found.\n");
+            return 0;
+        }
+
+        $this->output("\nTask History (" . count($entries) . " recent tasks):\n");
+        $this->output(str_repeat('-', 70) . "\n");
+        foreach ($entries as $e) {
+            $this->output("  ID:      {$e['id']}\n");
+            $this->output("  At:      {$e['recorded_at']}\n");
+            $preview = mb_substr($e['task'], 0, 80);
+            if (mb_strlen($e['task']) > 80) {
+                $preview .= '...';
+            }
+            $this->output("  Task:    {$preview}\n");
+            $this->output("\n");
+        }
+
+        $this->output("Usage: phpbot --replay <task-id>\n");
+        $this->output("       phpbot --replay <task-id> --with key=value\n\n");
+        return 0;
+    }
+
+    private function handleReplayCommand(string $taskId, array $overrides): int
+    {
+        $historyDir = dirname(__DIR__, 2) . '/storage/history';
+        $history = new TaskHistory($historyDir);
+        $entry = $history->get($taskId);
+
+        if ($entry === null) {
+            $this->error("Task ID not found: {$taskId}\n");
+            return 1;
+        }
+
+        $task = $entry['task'];
+        $params = $entry['params'] ?? [];
+
+        if (!empty($overrides)) {
+            $task = $history->applyOverrides($task, $params, $overrides);
+            $this->output("[REPLAY] Replaying with overrides: " . json_encode($overrides) . "\n");
+        }
+
+        $this->output("[REPLAY] Replaying task: {$task}\n\n");
+        return $this->runSingleCommand($task, $this->verbose);
+    }
+
+    private function handleResumeCommand(string $sessionId): int
+    {
+        $checkpointDir = dirname(__DIR__, 2) . '/storage/checkpoints';
+        $checkpointManager = new CheckpointManager($checkpointDir);
+
+        if ($sessionId === '') {
+            $sessions = $checkpointManager->listSessions();
+            if (empty($sessions)) {
+                $this->output("No checkpoint sessions available.\n");
+                return 0;
+            }
+            $this->output("\nAvailable Checkpoint Sessions:\n");
+            $this->output(str_repeat('-', 60) . "\n");
+            foreach ($sessions as $s) {
+                $this->output("  ID:         {$s['session_id']}\n");
+                $this->output("  Saved at:   {$s['checkpoint_at']}\n");
+                $this->output("  Iteration:  {$s['iteration']}\n");
+                $this->output("  Task:       " . mb_substr($s['task'], 0, 70) . "\n\n");
+            }
+            $this->output("Usage: phpbot --resume <session-id>\n\n");
+            return 0;
+        }
+
+        $checkpoint = $checkpointManager->load($sessionId);
+        if ($checkpoint === null) {
+            $this->error("Checkpoint not found: {$sessionId}\n");
+            return 1;
+        }
+
+        $task = $checkpoint['task'] ?? '';
+        if ($task === '') {
+            $this->error("Checkpoint has no task to resume.\n");
+            return 1;
+        }
+
+        $iteration = $checkpoint['iteration'] ?? 0;
+        $this->output("[RESUME] Resuming from checkpoint (iteration {$iteration}): {$task}\n\n");
+        return $this->runSingleCommand($task, $this->verbose);
+    }
+
     private function showHelp(): void
     {
         $help = <<<HELP
@@ -162,18 +443,36 @@ Usage:
   phpbot -d  (daemon mode: listener + scheduler)
 
 Options:
-  -h, --help         Show this help message
-  -V, --version      Show version information
-  -v, --verbose      Enable verbose output
-  -i, --interactive  Run in interactive mode
-  -l, --list-tools   List all available tools
-  -d, --daemon       Start listener + scheduler daemon
-  -c, --command      Run a single command
+  -h, --help                  Show this help message
+  -V, --version               Show version information
+  -v, --verbose               Enable verbose output
+  -i, --interactive           Run in interactive mode
+  -l, --list-tools            List all available tools
+  -d, --daemon                Start listener + scheduler daemon
+  -c, --command               Run a single command
+  --dry-run                   Simulate execution without making real changes
+  --no-cache                  Bypass the cache for this run
+  --rollback [session-id]     List sessions or roll back a specific session
+  --restore <file>            List backups or restore a file
+  --version-num <n>           Backup version number (use with --restore)
+  --history                   Show task history
+  --replay <task-id>          Replay a historical task
+  --with key=value            Override a parameter for --replay
+  --resume [session-id]       Resume from a checkpoint (list if omitted)
 
 Examples:
   phpbot "What files are in the current directory?"
   phpbot -v "Create a PHP class that validates email addresses"
   phpbot -c "Run the tests and fix any failures"
+  phpbot --dry-run "Replace all OpenAI keys"
+  phpbot --rollback                       (list rollback sessions)
+  phpbot --rollback 20260220-143022-abc1  (roll back a session)
+  phpbot --restore /path/to/file.php      (list backups)
+  phpbot --restore /path/to/file.php --version-num 2
+  phpbot --history
+  phpbot --replay 20260220-143022-abc1
+  phpbot --replay 20260220-143022-abc1 --with old_key=new_key
+  phpbot --resume                         (list checkpoint sessions)
   phpbot -d -v  (start daemon with verbose logging)
   phpbot -i
 

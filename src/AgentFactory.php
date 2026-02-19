@@ -10,6 +10,7 @@ use ClaudeAgents\Progress\AgentUpdate;
 use Dalehurley\Phpbot\Apple\AppleFMContextCompactor;
 use Dalehurley\Phpbot\Apple\ToolResultSummarizer;
 use Dalehurley\Phpbot\Platform;
+use Dalehurley\Phpbot\Storage\CheckpointManager;
 
 class AgentFactory
 {
@@ -123,17 +124,34 @@ When you're not sure how to accomplish something, EXPLORE: check what commands e
 - **bash**: Your primary superpower. Run shell commands, scripts, install packages, call APIs, interact with the OS. NEVER send empty commands.
 - **write_file**: Preferred for creating structured files (markdown, HTML, text, scripts). Use this instead of bash heredocs for large content.
 - **read_file**: Read files when needed.
+- **edit_file**: Edit files in-place. Every file is automatically backed up before each change — use restore_file if you need to undo.
 - **ask_user**: Prompt the user for missing information (API keys, credentials, choices). Use when you need secrets or input to proceed.
 - **get_keys**: ALWAYS check the keystore BEFORE asking for credentials. Call get_keys with the keys you need. If all_found, use them; otherwise ask_user only for the missing ones.
 - **store_keys**: AFTER receiving credentials from the user, call store_keys to save them for future runs.
 - **search_computer**: Search the local machine for API keys and credentials in {$credSources}. Use this AFTER get_keys returns missing keys and BEFORE ask_user.
 - **tool_builder**: Create reusable tools when a pattern repeats.
 
-## File Creation Strategy
-When creating output files or documents:
-1. ALWAYS use the `write_file` tool for creating files. Just provide a filename (e.g. "report.md") or relative path (e.g. "reports/summary.md"). Files are automatically saved to the storage folder, and the full path is returned.
-2. Do NOT use bash heredocs or echo/cat redirects to create files — use `write_file` instead so files are tracked and the user gets the file location.
-3. After creating files, always mention the storage path returned by the tool in your final answer so the user knows where to find them.
+## Safety Tools — Use These for Risky Operations
+- **analyze_impact**: Call BEFORE any bulk or destructive operation. Scans dependencies, checks Git status, and returns a risk level (low/medium/high) with suggested tests. Use for key rotations, mass edits, deletions.
+- **rotate_keys**: The RIGHT way to replace API keys across files. Handles multiple providers (OpenAI, Anthropic, Google, Twilio, Stripe, GitHub, SendGrid, Slack). Creates a rollback snapshot automatically. Use `action: "detect"` first to see where keys live, then `action: "rotate"` with the replacements map.
+- **verify_operation**: Call AFTER any bulk edit or key rotation to confirm changes landed correctly. Samples up to 10 files and reports pass/fail per file. Always call this after bulk edits.
+- **rollback**: Atomically revert all file changes from a session if something went wrong. Use `action: "list"` to see available sessions, `action: "rollback"` with the session_id to revert.
+- **restore_file**: Restore any individual file from its automatic pre-edit backup. Use `action: "list"` to see available versions, `action: "restore"` to roll back to a specific one.
+
+## File Operations Strategy — MANDATORY
+
+### Creating new files
+1. ALWAYS use `write_file` to create files. Provide a filename or relative path; files are saved to the storage folder automatically.
+2. NEVER use bash heredocs, `echo >`, `cat >`, or `tee` to create new files — use `write_file` so files are tracked and the user gets the location.
+3. After creating files, mention the storage path returned by the tool in your final answer.
+
+### Modifying EXISTING files (critical — read carefully)
+When the task involves editing, updating, or replacing content in a file that already exists anywhere on the filesystem:
+1. Use `edit_file` for targeted find-and-replace changes to an existing file. It automatically backs up the file before editing so changes can be undone with `restore_file`.
+2. Use `write_file` when you need to fully replace an existing file's contents.
+3. NEVER use bash (`cat >`, `echo >`, `tee`, `sed -i`, `awk`, redirects) to overwrite existing files — this bypasses the automatic backup system and makes recovery impossible.
+
+In short: **bash for reading/running; `edit_file`/`write_file` for writing.**
 
 PROMPT;
 
@@ -332,14 +350,29 @@ PROMPT;
         $fileLog = $this->fileLogger;
         $iterationCount = 0;
         $summarizer = $this->config['iteration_summarizer'] ?? null;
+        $checkpointInterval = (int) ($this->config['checkpoint_interval'] ?? 5);
+        $sessionId = $this->config['session_id'] ?? null;
+        $taskInput = $this->config['task_input'] ?? '';
 
-        $agent->onUpdate(function (AgentUpdate $update) use ($progress, $verbose, $fileLog, &$iterationCount, $summarizer) {
+        // Build checkpoint manager if storage path is available
+        // tools_storage_path = .../storage/tools  →  dirname = .../storage
+        $checkpointManager = null;
+        if ($sessionId !== null) {
+            $checkpointDir = dirname($this->config['tools_storage_path'] ?? dirname(__DIR__) . '/storage/tools') . '/checkpoints';
+            $checkpointManager = new CheckpointManager($checkpointDir);
+        }
+
+        $agent->onUpdate(function (AgentUpdate $update) use ($progress, $verbose, $fileLog, &$iterationCount, $summarizer, $checkpointInterval, $sessionId, $taskInput, $checkpointManager) {
             switch ($update->getType()) {
                 case 'agent.start':
                     $progress('agent_start', 'Agent started working...');
                     break;
                 case 'agent.completed':
                     $progress('agent_complete', 'Agent finished');
+                    // Clear checkpoint on successful completion
+                    if ($checkpointManager !== null && $sessionId !== null) {
+                        $checkpointManager->clear($sessionId);
+                    }
                     if ($fileLog !== null) {
                         $data = $update->getData();
                         if (is_array($data)) {
@@ -353,6 +386,22 @@ PROMPT;
                 case 'llm.iteration':
                     $iterationCount++;
                     $progress('iteration', "Thinking... (iteration {$iterationCount})");
+
+                    // Save checkpoint every N iterations
+                    if ($checkpointManager !== null && $sessionId !== null
+                        && $checkpointInterval > 0
+                        && $iterationCount % $checkpointInterval === 0
+                    ) {
+                        try {
+                            $checkpointManager->save($sessionId, [
+                                'task' => $taskInput,
+                                'iteration' => $iterationCount,
+                                'session_id' => $sessionId,
+                            ]);
+                        } catch (\Throwable) {
+                            // Non-fatal
+                        }
+                    }
 
                     $data = $update->getData();
                     $text = is_array($data) ? trim((string) ($data['text'] ?? '')) : '';

@@ -7,6 +7,7 @@ namespace Dalehurley\Phpbot\Tools;
 use ClaudeAgents\Contracts\ToolInterface;
 use ClaudeAgents\Contracts\ToolResultInterface;
 use ClaudeAgents\Tools\ToolResult;
+use Dalehurley\Phpbot\DryRun\DryRunContext;
 use Dalehurley\Phpbot\Storage\KeyStore;
 
 class StoreKeysTool implements ToolInterface
@@ -56,6 +57,19 @@ class StoreKeysTool implements ToolInterface
         $keys = $input['keys'] ?? [];
         if (!is_array($keys)) {
             return ToolResult::error('Keys must be an object of key-value pairs.');
+        }
+
+        // Dry-run: simulate without storing
+        if (DryRunContext::isActive()) {
+            $keyNames = array_filter(array_keys($keys), fn($k) => trim((string) $k) !== '');
+            DryRunContext::record('store_keys', 'Store credentials', [
+                'keys' => implode(', ', $keyNames),
+            ]);
+            return ToolResult::success(json_encode([
+                'stored' => $keyNames,
+                'dry_run' => true,
+                'message' => '[DRY-RUN] Key storage simulated — no keys saved.',
+            ]));
         }
 
         $stored = [];
