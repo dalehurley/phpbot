@@ -71,8 +71,9 @@ class FeaturePipeline
             $this->pathsForType($type),
             isNewFileOnly: true
         );
+        $slug = $this->slugify($description);
 
-        $proposal = ImprovementProposal::create($description, $type, $riskTier);
+        $proposal = ImprovementProposal::create($description, $type, $riskTier, $slug);
 
         if ($proposal->isBlocked()) {
             return $this->fail('This change targets a permanently blocked path and cannot be submitted automatically.');
@@ -305,6 +306,21 @@ You are implementing a self-improvement feature for PHPBot. Follow these instruc
 
 Implement the feature now.
 PROMPT;
+    }
+
+    /** Convert a description string into a URL/branch-safe kebab-case slug. */
+    private function slugify(string $description): string
+    {
+        $slug = strtolower($description);
+        $slug = preg_replace('/[^a-z0-9\s-]/', '', $slug) ?? $slug;
+        $slug = preg_replace('/[\s-]+/', '-', trim($slug)) ?? $slug;
+        $slug = trim($slug, '-');
+        // Truncate to keep branch names manageable
+        if (strlen($slug) > 50) {
+            $slug = substr($slug, 0, 50);
+            $slug = rtrim($slug, '-');
+        }
+        return $slug !== '' ? $slug : 'feature';
     }
 
     private function classifyType(string $description): string
