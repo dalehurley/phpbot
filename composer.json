@@ -13,6 +13,10 @@
     "react/datagram": "^1.2"
   },
   "license": "MIT",
+  "require-dev": {
+    "mockery/mockery": "^1.6",
+    "phpunit/phpunit": "^11.0"
+  },
   "autoload": {
     "psr-4": {
       "Dalehurley\\Phpbot\\": "src/"
@@ -30,6 +34,11 @@
   "scripts": {
     "phpbot": "php bin/phpbot",
     "web": "bin/run-web.sh"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    }
   },
   "config": {
     "sort-packages": true,
