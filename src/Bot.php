@@ -27,6 +27,7 @@ use Dalehurley\Phpbot\Router\RouteResult;
 use Dalehurley\Phpbot\Router\RouterCache;
 use Dalehurley\Phpbot\Stats\TokenLedger;
 use Dalehurley\Phpbot\Storage\BackupManager;
+use Dalehurley\Phpbot\SelfImprovement\ImprovementDetector;
 use Dalehurley\Phpbot\Storage\KeyStore;
 use Dalehurley\Phpbot\Storage\RollbackManager;
 use Dalehurley\Phpbot\Storage\TaskHistory;
@@ -386,6 +387,12 @@ class Bot
             } catch (\Throwable) {
                 // Non-fatal
             }
+        }
+
+        // Passive improvement detection — suggest /feature if a capability gap is detected
+        $improvementSuggestion = ImprovementDetector::check($input, $analysis, $botResult, $this->config);
+        if ($improvementSuggestion !== null) {
+            $progress('improvement', $improvementSuggestion);
         }
 
         return $botResult;

@@ -12,6 +12,7 @@ use Dalehurley\Phpbot\Listener\StateStore;
 use Dalehurley\Phpbot\Listener\Watchers\CalendarWatcher;
 use Dalehurley\Phpbot\Listener\Watchers\MailWatcher;
 use Dalehurley\Phpbot\Listener\Watchers\MessageWatcher;
+use Dalehurley\Phpbot\Listener\Watchers\GitHubPRWatcher;
 use Dalehurley\Phpbot\Listener\Watchers\NotificationWatcher;
 use Dalehurley\Phpbot\Scheduler\Scheduler;
 use Dalehurley\Phpbot\Scheduler\TaskStore;
@@ -199,6 +200,14 @@ class DaemonRunner
         if (in_array('notifications', $enabledWatchers, true)) {
             $watcher = new NotificationWatcher($runner);
             $watcher->setLogger(fn(string $msg) => $this->log("[notifications] {$msg}"));
+            $this->listener->addWatcher($watcher);
+        }
+
+        // Register GitHub PR watcher when self-improvement is enabled
+        $si     = $this->config['self_improvement'] ?? [];
+        $siRepo = (string) ($si['github_repo'] ?? '');
+        if (!empty($si['enabled']) && $siRepo !== '') {
+            $watcher = new GitHubPRWatcher($siRepo, fn(string $msg) => $this->log("[github_pr] {$msg}"));
             $this->listener->addWatcher($watcher);
         }
 

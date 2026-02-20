@@ -6,6 +6,7 @@ namespace Dalehurley\Phpbot\CLI;
 
 use Dalehurley\Phpbot\Bot;
 use Dalehurley\Phpbot\Cache\CacheManager;
+use Dalehurley\Phpbot\SelfImprovement\FeaturePipeline;
 use Dalehurley\Phpbot\Conversation\ConversationHistory;
 use Dalehurley\Phpbot\Conversation\ConversationLayer;
 use Dalehurley\Phpbot\Daemon\DaemonRunner;
@@ -30,6 +31,7 @@ class Application
     private ?ConversationHistory $conversationHistory = null;
     private bool $dryRun = false;
     private bool $noCache = false;
+    private ?int $daemonPid = null;
 
     public function __construct(array $config = [])
     {
@@ -124,7 +126,10 @@ class Application
 
         // Handle different modes
         if ($args['interactive']) {
-            return $this->runInteractiveMode();
+            $this->daemonPid = $this->startBackgroundDaemon($args['verbose']);
+            $exitCode = $this->runInteractiveMode();
+            $this->stopBackgroundDaemon();
+            return $exitCode;
         }
 
         if (!empty($args['input'])) {
@@ -132,7 +137,10 @@ class Application
         }
 
         // Default to interactive mode if no input
-        return $this->runInteractiveMode();
+        $this->daemonPid = $this->startBackgroundDaemon($args['verbose']);
+        $exitCode = $this->runInteractiveMode();
+        $this->stopBackgroundDaemon();
+        return $exitCode;
     }
 
     private function parseArguments(array $argv): array
@@ -635,6 +643,7 @@ HELP;
             '/skills' => $this->showSkills(),
             '/scripts' => $this->showScripts(),
             '/schedule' => $this->handleScheduleCommand($arg),
+            '/feature' => $this->handleFeatureCommand($arg),
             '/clear' => $this->clearScreen(),
             '/exit', '/quit', '/q' => -1,
             default => $this->unknownCommand($cmd),
@@ -664,6 +673,9 @@ HELP;
         $this->output("    /schedule       - Manage scheduled tasks\n");
         $this->output("    /schedule list  - List all scheduled tasks\n");
         $this->output("    /schedule add   - Add a new scheduled task\n");
+        $this->output("    /feature <desc> - Submit a self-improvement PR for community review\n");
+        $this->output("    /feature status - List open self-improvement PRs\n");
+        $this->output("    /feature withdraw <n> - Close self-improvement PR #n\n");
         $this->output("    /clear          - Clear screen\n");
         $this->output("    /exit           - Exit the application\n\n");
         $this->output("  File Shortcuts:\n");
@@ -1133,6 +1145,255 @@ HELP;
         $this->conversationHistory->setActiveLayer($layer);
         $this->output("💬 Context layer changed: {$previous->value} -> {$layer->value} ({$layer->label()})\n\n");
         return 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Feature (self-improvement) commands
+    // -------------------------------------------------------------------------
+
+    private function handleFeatureCommand(string $arg): int
+    {
+        $parts  = preg_split('/\s+/', trim($arg), 2);
+        $subCmd = strtolower($parts[0] ?? '');
+        $subArg = $parts[1] ?? '';
+
+        if ($subCmd === 'status') {
+            return $this->featureStatus();
+        }
+
+        if ($subCmd === 'withdraw') {
+            return $this->featureWithdraw((int) $subArg);
+        }
+
+        // Everything else (including bare /feature <description>) submits a new feature
+        $description = trim($arg);
+        if ($description === '') {
+            $this->output("\nUsage: /feature <description of the improvement>\n");
+            $this->output("       /feature status\n");
+            $this->output("       /feature withdraw <pr-number>\n\n");
+            return 0;
+        }
+
+        return $this->featureSubmit($description);
+    }
+
+    private function featureSubmit(string $description): int
+    {
+        $si = $this->config['self_improvement'] ?? [];
+
+        if (empty($si['enabled'])) {
+            $this->output("\nSelf-improvement is disabled. Set PHPBOT_SELF_IMPROVEMENT=true to enable.\n\n");
+            return 0;
+        }
+
+        if (empty($si['github_repo'])) {
+            $this->output("\nPHPBOT_GITHUB_REPO is not set. Please add it to your .env file.\n\n");
+            return 0;
+        }
+
+        if (!empty($si['require_confirm'])) {
+            $this->output("\nFeature request: \"{$description}\"\n");
+            $confirm = $this->prompt("Submit this as a self-improvement PR? [y/N] ");
+            if (strtolower(trim((string) $confirm)) !== 'y') {
+                $this->output("Cancelled.\n\n");
+                return 0;
+            }
+        }
+
+        if ($this->bot === null) {
+            $this->bot = new Bot($this->config, $this->verbose);
+        }
+
+        $pipeline = new FeaturePipeline($this->bot, $this->config);
+        $pipeline->setProgress(function (string $stage, string $message) {
+            $icon = match ($stage) {
+                'classify' => '🔍',
+                'branch'   => '🌿',
+                'build'    => '⚡',
+                'test'     => '🧪',
+                'commit'   => '💾',
+                'push'     => '🚀',
+                'pr'       => '📬',
+                'cleanup'  => '🧹',
+                'done'     => '✅',
+                'error'    => '❌',
+                default    => '→',
+            };
+            $this->output("{$icon} [{$stage}] {$message}\n");
+        });
+
+        $this->output("\n🤖 Starting self-improvement pipeline...\n\n");
+
+        $result = $pipeline->run($description);
+
+        $this->output("\n");
+
+        if ($result['ok']) {
+            $this->output("✅ Feature submitted for community review!\n");
+            $this->output("   PR:     {$result['pr_url']}\n");
+            $this->output("   Branch: {$result['branch']}\n\n");
+            $this->output($result['message'] . "\n\n");
+        } else {
+            $this->output("❌ Pipeline failed:\n   {$result['message']}\n\n");
+        }
+
+        return 0;
+    }
+
+    private function featureStatus(): int
+    {
+        $si   = $this->config['self_improvement'] ?? [];
+        $repo = (string) ($si['github_repo'] ?? '');
+
+        if ($repo === '') {
+            $this->output("\nPHPBOT_GITHUB_REPO is not set.\n\n");
+            return 0;
+        }
+
+        $output   = [];
+        $exitCode = 0;
+        exec(
+            'gh pr list --repo ' . escapeshellarg($repo)
+            . ' --label phpbot-self-improvement --state open --json number,title,url,createdAt 2>/dev/null',
+            $output,
+            $exitCode
+        );
+
+        $prs = [];
+        if ($exitCode === 0 && !empty($output)) {
+            $prs = json_decode(implode('', $output), true) ?? [];
+        }
+
+        $this->output("\n📋 Open Self-Improvement PRs (" . count($prs) . "):\n");
+        $this->output(str_repeat('-', 60) . "\n");
+
+        if (empty($prs)) {
+            $this->output("  (none)\n\n");
+            return 0;
+        }
+
+        foreach ($prs as $pr) {
+            $this->output("  #{$pr['number']}  {$pr['title']}\n");
+            $this->output("        {$pr['url']}\n\n");
+        }
+
+        return 0;
+    }
+
+    private function featureWithdraw(int $prNumber): int
+    {
+        if ($prNumber <= 0) {
+            $this->output("\nUsage: /feature withdraw <pr-number>\n\n");
+            return 0;
+        }
+
+        $si   = $this->config['self_improvement'] ?? [];
+        $repo = (string) ($si['github_repo'] ?? '');
+
+        $confirm = $this->prompt("Close PR #{$prNumber}? [y/N] ");
+        if (strtolower(trim((string) $confirm)) !== 'y') {
+            $this->output("Cancelled.\n\n");
+            return 0;
+        }
+
+        $repoFlag = $repo !== '' ? '--repo ' . escapeshellarg($repo) : '';
+        $cmd      = "gh pr close {$prNumber} {$repoFlag} --comment 'Withdrawn by the proposing bot.' 2>&1";
+        $output   = [];
+        $exitCode = 0;
+        exec($cmd, $output, $exitCode);
+
+        if ($exitCode === 0) {
+            $this->output("PR #{$prNumber} closed.\n\n");
+        } else {
+            $this->output("Failed to close PR #{$prNumber}: " . implode(' ', $output) . "\n\n");
+        }
+
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // Background daemon management
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fork the daemon into a background child process so it runs alongside
+     * the interactive CLI session. Returns the child PID on success, null otherwise.
+     */
+    private function startBackgroundDaemon(bool $verbose): ?int
+    {
+        $si = $this->config['self_improvement'] ?? [];
+        $listenerCfg = $this->config['listener'] ?? [];
+
+        $daemonEnabled = (bool) ($listenerCfg['enabled'] ?? true);
+
+        if (!$daemonEnabled) {
+            return null;
+        }
+
+        if (!function_exists('pcntl_fork')) {
+            return null;
+        }
+
+        $pid = pcntl_fork();
+
+        if ($pid === -1) {
+            // Fork failed — continue without daemon
+            return null;
+        }
+
+        if ($pid === 0) {
+            // Child process: run the daemon
+            if (function_exists('posix_setsid')) {
+                posix_setsid();
+            }
+
+            // Redirect stdin to /dev/null so readline in the parent is not affected
+            $null = fopen('/dev/null', 'r');
+            if ($null !== false) {
+                fclose(STDIN);
+            }
+
+            $this->runDaemonMode($verbose);
+            exit(0);
+        }
+
+        // Parent process: return the child PID
+        $this->output("[daemon] Background daemon started (PID {$pid}).\n");
+        return $pid;
+    }
+
+    /**
+     * Send SIGTERM to the daemon child and wait for it to exit.
+     */
+    private function stopBackgroundDaemon(): void
+    {
+        if ($this->daemonPid === null) {
+            return;
+        }
+
+        if (function_exists('posix_kill')) {
+            posix_kill($this->daemonPid, SIGTERM);
+        }
+
+        // Non-blocking waitpid first; then a short polling loop
+        $status = 0;
+        if (function_exists('pcntl_waitpid')) {
+            pcntl_waitpid($this->daemonPid, $status, WNOHANG);
+        }
+
+        $waited = 0;
+        while ($waited < 5) {
+            usleep(200_000);
+            $waited += 0.2;
+            if (function_exists('pcntl_waitpid')) {
+                $res = pcntl_waitpid($this->daemonPid, $status, WNOHANG);
+                if ($res !== 0) {
+                    break;
+                }
+            }
+        }
+
+        $this->daemonPid = null;
     }
 
     // -------------------------------------------------------------------------

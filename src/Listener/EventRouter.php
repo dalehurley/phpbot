@@ -8,6 +8,8 @@ use Dalehurley\Phpbot\Apple\SmallModelClient;
 use Dalehurley\Phpbot\Bot;
 use Dalehurley\Phpbot\Scheduler\TaskStore;
 use Dalehurley\Phpbot\Scheduler\Task;
+use Dalehurley\Phpbot\SelfImprovement\PRClaimManager;
+use Dalehurley\Phpbot\SelfImprovement\VoteTallier;
 use Dalehurley\Phpbot\Stats\TokenLedger;
 use Dalehurley\Phpbot\Tools\AppleServicesTool;
 
@@ -72,6 +74,12 @@ class EventRouter
     public function handle(ListenerEvent $event): void
     {
         $this->log("Routing event: [{$event->source}] {$event->type} — {$event->subject}");
+
+        // Self-improvement PR review — bypass the normal LLM classification
+        if ($event->type === 'github_pr') {
+            $this->handleGitHubPR($event);
+            return;
+        }
 
         // Skip upcoming event alerts — just log them, don't classify
         if ($event->type === 'upcoming_event') {
@@ -311,6 +319,99 @@ PROMPT;
     public function clearActionLog(): void
     {
         $this->actionLog = [];
+    }
+
+    /**
+     * Handle a GitHub self-improvement PR event using the distributed review protocol.
+     */
+    private function handleGitHubPR(ListenerEvent $event): void
+    {
+        $meta     = $event->metadata;
+        $prNumber = (int) ($meta['pr_number'] ?? 0);
+        $repo     = (string) ($meta['repo'] ?? '');
+
+        if ($prNumber <= 0 || $repo === '') {
+            $this->log("github_pr: invalid metadata, skipping.");
+            $this->recordAction($event, 'skip', 'Missing pr_number or repo in metadata');
+            return;
+        }
+
+        $this->log("github_pr: attempting to claim reviewer slot for PR #{$prNumber}...");
+
+        // Retrieve self_improvement config injected via the bot's config array (if available)
+        $si          = [];
+        $botId       = gethostname() . '-' . substr(md5(__FILE__), 0, 8);
+        $maxReviewers = 3;
+        $jitter      = 300;
+        $timeout     = 30;
+        $quorum      = 2;
+
+        $claimManager = new PRClaimManager(
+            botId:           $botId,
+            repo:            $repo,
+            maxReviewers:    $maxReviewers,
+            jitterMaxSec:    $jitter,
+            claimTimeoutMin: $timeout,
+            logger:          fn(string $msg) => $this->log("[claim] {$msg}"),
+        );
+
+        if (!$claimManager->claim($prNumber)) {
+            $this->log("github_pr: did not secure a slot for PR #{$prNumber}.");
+            $this->recordAction($event, 'skip', 'No reviewer slot available');
+            return;
+        }
+
+        $this->log("github_pr: slot claimed, running review skill for PR #{$prNumber}...");
+
+        // Run the bot with the review-pull-request skill
+        $verdict    = 'fail';
+        $confidence = 0.5;
+        $notes      = 'Review could not be completed.';
+
+        if ($this->bot !== null) {
+            $reviewPrompt = sprintf(
+                "Use the review-pull-request skill to review GitHub PR #%d in repo %s.\n\n"
+                . "PR Title: %s\n\nPR Body:\n%s",
+                $prNumber,
+                $repo,
+                $meta['pr_title'] ?? '',
+                mb_substr($event->body, 0, 3000)
+            );
+
+            $result = $this->bot->run($reviewPrompt);
+
+            if ($result->isSuccess() && $result->getAnswer() !== null) {
+                $answer = $result->getAnswer();
+
+                // Parse verdict from the answer
+                if (preg_match('/"verdict"\s*:\s*"(pass|fail)"/', $answer, $m)) {
+                    $verdict = $m[1];
+                }
+                if (preg_match('/"confidence"\s*:\s*([0-9.]+)/', $answer, $m)) {
+                    $confidence = (float) $m[1];
+                }
+                if (preg_match('/"notes"\s*:\s*"([^"]+)"/', $answer, $m)) {
+                    $notes = $m[1];
+                }
+            }
+        }
+
+        $this->log("github_pr: verdict={$verdict} confidence={$confidence} for PR #{$prNumber}");
+
+        $claimManager->postVerdict($prNumber, $verdict, $confidence, $notes);
+
+        // Tally votes — this is idempotent and safe to call after every review
+        $tallier = new VoteTallier(
+            repo:             $repo,
+            botId:            $botId,
+            quorum:           $quorum,
+            maintainerHandle: '',
+            logger:           fn(string $msg) => $this->log("[tally] {$msg}"),
+        );
+        $tally = $tallier->tally($prNumber);
+
+        $this->log("github_pr: tally result — action={$tally['action']} passes={$tally['passes']} fails={$tally['fails']}");
+        $this->recordAction($event, 'review', "verdict={$verdict} tally={$tally['action']}");
     }
 
     private function recordAction(ListenerEvent $event, string $action, string $result): void

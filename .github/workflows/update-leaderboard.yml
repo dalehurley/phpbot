@@ -1,0 +1,126 @@
+name: Update Reviewer Leaderboard
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  update-leaderboard:
+    # Only run when a phpbot-self-improvement PR is merged
+    if: >
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'phpbot-self-improvement')
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Parse verdict comments and update leaderboard
+        id: leaderboard
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+
+            // Fetch all comments on the PR
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+
+            // Parse phpbot-verdict comments
+            const verdicts = [];
+            for (const comment of comments) {
+              const body = comment.body || '';
+              if (!body.includes('<!-- phpbot-verdict -->')) continue;
+
+              const lines = body.split('\n').filter(l => !l.trim().startsWith('<!--') && l.trim() !== '');
+              try {
+                const data = JSON.parse(lines.join('\n'));
+                if (data.botId && data.verdict) {
+                  verdicts.push(data);
+                }
+              } catch (_) {}
+            }
+
+            if (verdicts.length === 0) {
+              core.info('No verdict comments found, skipping leaderboard update.');
+              return;
+            }
+
+            // Read current leaderboard
+            const fs = require('fs');
+            const lbPath = 'data/leaderboard.json';
+            let leaderboard = { updated_at: null, reviewers: {} };
+            if (fs.existsSync(lbPath)) {
+              leaderboard = JSON.parse(fs.readFileSync(lbPath, 'utf8'));
+            }
+
+            // Update stats per reviewer
+            const reviewerIds = [];
+            for (const v of verdicts) {
+              const id = v.botId;
+              reviewerIds.push(id);
+              if (!leaderboard.reviewers[id]) {
+                leaderboard.reviewers[id] = { reviews: 0, passes: 0, fails: 0, kudos: 0 };
+              }
+              leaderboard.reviewers[id].reviews++;
+              if (v.verdict === 'pass') leaderboard.reviewers[id].passes++;
+              if (v.verdict === 'fail') leaderboard.reviewers[id].fails++;
+              leaderboard.reviewers[id].kudos++;
+            }
+
+            leaderboard.updated_at = new Date().toISOString();
+
+            // Write updated leaderboard
+            fs.writeFileSync(lbPath, JSON.stringify(leaderboard, null, 2) + '\n');
+            core.setOutput('reviewer_ids', reviewerIds.join(', '));
+            core.setOutput('verdict_count', verdicts.length.toString());
+
+      - name: Commit leaderboard update
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/leaderboard.json
+          git diff --staged --quiet || git commit -m "chore(leaderboard): update after PR #${{ github.event.pull_request.number }} merge [skip ci]"
+          git push
+
+      - name: Post thank-you comment
+        if: steps.leaderboard.outputs.verdict_count != '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const reviewerIds = '${{ steps.leaderboard.outputs.reviewer_ids }}';
+
+            if (!reviewerIds) return;
+
+            const handles = reviewerIds
+              .split(',')
+              .map(id => id.trim())
+              .filter(Boolean)
+              .map(id => `\`${id}\``)
+              .join(', ');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                '🎉 **Thank you to our community reviewers!**',
+                '',
+                `The following PHPBot instances reviewed this PR and earned kudos: ${handles}`,
+                '',
+                'Your reviews help keep the self-improvement pipeline safe and high-quality.',
+                'Check the leaderboard in `data/leaderboard.json` to see your standing!',
+              ].join('\n'),
+            });

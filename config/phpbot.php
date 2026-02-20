@@ -376,4 +376,33 @@ return [
     | Leave empty to allow all commands except blocked ones.
     */
     'allowed_commands' => $envList('PHPBOT_ALLOWED_COMMANDS', []),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Self-Improvement Pipeline
+    |--------------------------------------------------------------------------
+    | Controls the autonomous feature-proposal and PR-submission pipeline.
+    |
+    | max_risk_tier: highest change tier the bot may auto-propose.
+    |   'skill'  — only files under skills/ (safest)
+    |   'tool'   — new files under src/Tools/ (default)
+    |   'core'   — existing src/ files (requires larger quorum)
+    |
+    | github_repo: owner/repo string used by gh CLI for PR creation.
+    |   Leave blank to disable GitHub integration (PRs will not be created).
+    */
+    'self_improvement' => [
+        'enabled'         => (bool) $env('PHPBOT_SELF_IMPROVEMENT', true),
+        'bot_id'          => $env('PHPBOT_BOT_ID', null),
+        'github_repo'     => $env('PHPBOT_GITHUB_REPO', null),
+        'max_risk_tier'   => $env('PHPBOT_MAX_RISK_TIER', 'tool'),
+        'require_confirm' => (bool) $env('PHPBOT_FEATURE_CONFIRM', true),
+        'review' => [
+            'max_reviewers'     => (int) $env('PHPBOT_REVIEW_MAX_REVIEWERS', 3),
+            'quorum'            => (int) $env('PHPBOT_REVIEW_QUORUM', 2),
+            'jitter_max_sec'    => (int) $env('PHPBOT_REVIEW_JITTER_MAX', 300),
+            'claim_timeout_min' => (int) $env('PHPBOT_REVIEW_CLAIM_TIMEOUT', 30),
+            'poll_interval_sec' => (int) $env('PHPBOT_REVIEW_POLL_INTERVAL', 600),
+        ],
+    ],
 ];
