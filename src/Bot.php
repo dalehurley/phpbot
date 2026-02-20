@@ -398,6 +398,11 @@ class Bot
         return $botResult;
     }
 
+    public function getConfig(): array
+    {
+        return $this->config;
+    }
+
     public function getSessionId(): string
     {
         return $this->sessionId;

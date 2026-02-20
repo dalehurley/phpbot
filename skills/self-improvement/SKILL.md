@@ -1,3 +1,10 @@
+---
+name: self-improvement
+description: "Submit a self-improvement feature PR for community review. Use when the user types /feature <description>, asks the bot to improve itself, add a capability, or submit an automated pull request for a new feature. Handles the full pipeline: classify → branch → build → test → PR → return to main."
+tags: [self-improvement, feature, github, pull-request, automation]
+version: 1.0.0
+---
+
 # Skill: Self-Improvement Pipeline
 
 ## Purpose

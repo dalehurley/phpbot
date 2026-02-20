@@ -101,10 +101,43 @@ class FeaturePipeline
         }
 
         // --- 3. Build --------------------------------------------------------
+        // Run the bot with automatic continuation when the iteration limit is
+        // hit — complex features often need more than one segment to complete.
         $this->emit('build', 'Asking the bot to implement the feature...');
+
+        $maxIterLimit       = (int) ($this->bot->getConfig()['max_iterations'] ?? 20);
+        $buildRound         = 0;
+        $totalBuildIter     = 0;
+        $maxBuildRounds     = 5;
 
         $buildPrompt = $this->buildPrompt($proposal);
         $botResult   = $this->bot->run($buildPrompt, fn($stage, $msg) => $this->emit('build', $msg));
+        $totalBuildIter += $botResult->getIterations();
+
+        // Continue automatically while the build hits the limit and hasn't failed
+        while (
+            $botResult->isSuccess()
+            && $botResult->getIterations() >= $maxIterLimit
+            && $buildRound < $maxBuildRounds
+        ) {
+            $buildRound++;
+            $this->emit(
+                'build',
+                "Iteration limit reached ({$totalBuildIter} used). "
+                . "Continuing build (segment {$buildRound}/{$maxBuildRounds})..."
+            );
+
+            $botResult = $this->bot->run(
+                "Continue implementing the feature from exactly where you left off. "
+                . "Review the conversation history to see what files have been created or modified. "
+                . "Complete all remaining steps — do not repeat work already done. "
+                . "(Build continuation segment: {$buildRound})",
+                fn($stage, $msg) => $this->emit('build', $msg)
+            );
+            $totalBuildIter += $botResult->getIterations();
+        }
+
+        $this->emit('build', "Build finished ({$totalBuildIter} total iterations across " . ($buildRound + 1) . " segment(s)).");
 
         if (!$botResult->isSuccess()) {
             $this->git->revertToMain($proposal->branchName);

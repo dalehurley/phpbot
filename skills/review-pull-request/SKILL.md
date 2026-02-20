@@ -1,3 +1,10 @@
+---
+name: review-pull-request
+description: "Review a PHPBot self-improvement pull request as a community reviewer bot. Use when a github_pr event is received for a PR labelled phpbot-self-improvement. Performs a security and quality checklist, then posts a structured phpbot-verdict comment with pass/fail, confidence, and notes."
+tags: [self-improvement, github, pull-request, review, community, automation]
+version: 1.0.0
+---
+
 # Skill: Review Pull Request (Self-Improvement)
 
 ## Purpose
