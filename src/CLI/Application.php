@@ -821,10 +821,64 @@ HELP;
                 }
             };
 
+            // ------------------------------------------------------------------
+            // Run the bot with automatic continuation when the iteration limit
+            // is reached. After each segment the user is asked to approve
+            // continuing for another batch. This repeats until the task
+            // completes, fails, or the user declines to continue.
+            // ------------------------------------------------------------------
+
+            $maxIterLimit     = (int) ($this->config['max_iterations'] ?? 20);
+            $totalIterations  = 0;
+            $continuationRound = 0;
+
             $result = $this->bot->run($effectiveInput, $onProgress);
+            $totalIterations += $result->getIterations();
+
+            while ($result->isSuccess() && $result->getIterations() >= $maxIterLimit) {
+                // Show the partial answer so the user can see progress.
+                $partial = $result->getAnswer();
+                if ($partial !== null && trim($partial) !== '') {
+                    $this->output("\n⏸️  Partial progress (segment " . ($continuationRound + 1) . "):\n");
+                    $this->output(str_repeat('·', 50) . "\n");
+                    $this->output($partial . "\n");
+                    $this->output(str_repeat('·', 50) . "\n");
+                }
+
+                $this->output(
+                    "\n⚠️  The task reached the {$maxIterLimit}-iteration limit "
+                    . "({$totalIterations} total iterations used so far).\n"
+                );
+                $confirm = $this->prompt("Continue for up to {$maxIterLimit} more iterations? [y/N] ");
+
+                if (strtolower(trim((string) $confirm)) !== 'y') {
+                    $this->output("Task paused. Describe what remains to pick up where we left off.\n\n");
+                    break;
+                }
+
+                $continuationRound++;
+                $this->output(
+                    "\n▶️  Continuing (segment {$continuationRound}, "
+                    . "{$totalIterations} iterations used so far)...\n\n"
+                );
+
+                $result = $this->bot->run(
+                    "Continue the previous task from exactly where you left off. "
+                    . "Review the conversation history to confirm what has already been completed, "
+                    . "then finish all remaining steps without repeating any work that is done. "
+                    . "(Continuation segment: {$continuationRound})",
+                    $onProgress
+                );
+                $totalIterations += $result->getIterations();
+            }
+
             $duration = round(microtime(true) - $startTime, 2);
 
             if ($result->isSuccess()) {
+                $iterLabel = $continuationRound > 0
+                    ? "{$totalIterations} total ({$continuationRound} continuation(s))"
+                    : (string) $totalIterations;
+
                 $this->output("\n📤 Response:\n");
                 $this->output(str_repeat('-', 50) . "\n");
                 $this->output($result->getAnswer() . "\n");
@@ -845,20 +899,15 @@ HELP;
                 $usage = $result->getTokenUsage();
                 $cost = $this->estimateCostFromResult($result);
 
-                $this->output("\n📊 Stats: {$result->getIterations()} iterations, {$duration}s, ~\${$cost}\n");
+                $this->output("\n📊 Stats: {$iterLabel} iterations, {$duration}s, ~\${$cost}\n");
 
                 if ($ledger !== null && $ledger->hasEntries()) {
                     $this->output($ledger->formatReport() . "\n");
-
-                    $savings = $ledger->getSavings();
-                    if ($savings['estimated_tokens_saved'] > 0 && !$this->verbose) {
-                        // Savings already shown in formatReport when verbose
-                    }
                 } else {
                     // Fallback: single-line Anthropic-only display
-                    $inputTokens = number_format($usage['input'] ?? 0);
+                    $inputTokens  = number_format($usage['input'] ?? 0);
                     $outputTokens = number_format($usage['output'] ?? 0);
-                    $totalTokens = number_format($usage['total'] ?? 0);
+                    $totalTokens  = number_format($usage['total'] ?? 0);
                     $this->output("  Tokens: {$totalTokens} ({$inputTokens} in / {$outputTokens} out)\n");
                 }
 
@@ -874,7 +923,7 @@ HELP;
                 }
 
                 // Log final result summary
-                $logWriter("Run completed. Success=true, iterations={$result->getIterations()}, duration={$duration}s, cost=\${$cost}");
+                $logWriter("Run completed. Success=true, iterations={$totalIterations} ({$continuationRound} continuations), duration={$duration}s, cost=\${$cost}");
                 if (!empty($toolCalls)) {
                     $logWriter('Tools used: ' . implode(', ', array_unique(array_column($toolCalls, 'tool'))));
                 }
