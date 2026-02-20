@@ -835,7 +835,7 @@ HELP;
             $result = $this->bot->run($effectiveInput, $onProgress);
             $totalIterations += $result->getIterations();
 
-            while ($result->isSuccess() && $result->getIterations() >= $maxIterLimit) {
+            while ($this->isIterationLimitResult($result)) {
                 // Show the partial answer so the user can see progress.
                 $partial = $result->getAnswer();
                 if ($partial !== null && trim($partial) !== '') {
@@ -2037,6 +2037,21 @@ HELP;
             $line = '[' . date('Y-m-d H:i:s') . '] ' . $message . PHP_EOL;
             @file_put_contents($logFile, $line, FILE_APPEND | LOCK_EX);
         };
+    }
+
+    /**
+     * Detect the "Maximum iterations (N) reached" error from the agent library.
+     * The library marks this as a failure but it just means the bot needs more room.
+     */
+    private function isIterationLimitResult(\Dalehurley\Phpbot\BotResult $result): bool
+    {
+        if ($result->isSuccess()) {
+            // Successful result where iterations == max also qualifies
+            $maxIter = (int) ($this->config['max_iterations'] ?? 20);
+            return $result->getIterations() >= $maxIter;
+        }
+        $error = $result->getError() ?? '';
+        return str_contains($error, 'Maximum iterations') && str_contains($error, 'reached');
     }
 
     /**

@@ -105,7 +105,6 @@ class FeaturePipeline
         // hit — complex features often need more than one segment to complete.
         $this->emit('build', 'Asking the bot to implement the feature...');
 
-        $maxIterLimit       = (int) ($this->bot->getConfig()['max_iterations'] ?? 20);
         $buildRound         = 0;
         $totalBuildIter     = 0;
         $maxBuildRounds     = 5;
@@ -114,10 +113,12 @@ class FeaturePipeline
         $botResult   = $this->bot->run($buildPrompt, fn($stage, $msg) => $this->emit('build', $msg));
         $totalBuildIter += $botResult->getIterations();
 
-        // Continue automatically while the build hits the limit and hasn't failed
+        // The agent library marks the run as *failed* when it hits the
+        // iteration limit ("Maximum iterations (N) reached without completion").
+        // That is not a real failure — it just means the bot needs more room.
+        // Detect this and continue automatically for up to $maxBuildRounds.
         while (
-            $botResult->isSuccess()
-            && $botResult->getIterations() >= $maxIterLimit
+            $this->isIterationLimitError($botResult)
             && $buildRound < $maxBuildRounds
         ) {
             $buildRound++;
@@ -139,7 +140,8 @@ class FeaturePipeline
 
         $this->emit('build', "Build finished ({$totalBuildIter} total iterations across " . ($buildRound + 1) . " segment(s)).");
 
-        if (!$botResult->isSuccess()) {
+        // After continuation rounds, the bot may have genuinely failed (non-iteration error).
+        if (!$botResult->isSuccess() && !$this->isIterationLimitError($botResult)) {
             $this->git->revertToMain($proposal->branchName);
             return $this->fail('Bot failed to implement the feature: ' . ($botResult->getError() ?? 'unknown error'));
         }
@@ -341,6 +343,19 @@ Implement the feature now.
 PROMPT;
     }
 
+    /**
+     * Detect the specific "Maximum iterations (N) reached" error from the agent library.
+     * This is NOT a real failure — it means the bot just needs more iterations.
+     */
+    private function isIterationLimitError(\Dalehurley\Phpbot\BotResult $result): bool
+    {
+        if ($result->isSuccess()) {
+            return false;
+        }
+        $error = $result->getError() ?? '';
+        return str_contains($error, 'Maximum iterations') && str_contains($error, 'reached');
+    }
+
     /** Convert a description string into a URL/branch-safe kebab-case slug. */
     private function slugify(string $description): string
     {
@@ -360,15 +375,24 @@ PROMPT;
     {
         $lower = strtolower($description);
 
-        if (str_contains($lower, 'skill') || str_contains($lower, 'prompt')) {
-            return 'skill';
+        // Only escalate to 'core' when the user explicitly targets bot internals.
+        $coreKeywords = ['refactor', 'rewrite', 'modify core', 'change how the bot',
+                         'change the agent', 'update bot.php', 'change daemon',
+                         'change router', 'change scheduler'];
+        foreach ($coreKeywords as $kw) {
+            if (str_contains($lower, $kw)) {
+                return 'core';
+            }
         }
 
-        if (str_contains($lower, 'tool') || str_contains($lower, 'command')) {
+        // 'tool' tier — adding a new discrete capability callable by the agent.
+        // Use word-boundary matching to avoid false positives like "control" matching "command".
+        if (preg_match('/\btool\b|\bcommand\b|\bintegration\b|\bapi integration\b|\bmcp\b/', $lower)) {
             return 'tool';
         }
 
-        return 'core';
+        // Everything else (new workflow, feature, automation, browser, etc.) → 'skill'.
+        return 'skill';
     }
 
     /** Return a representative set of paths for a given change type. */
